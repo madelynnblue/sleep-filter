@@ -1,0 +1,29 @@
+{
+  "name": "music-analysis",
+  "version": "0.1.0",
+  "description": "Find and measure music in audio, entirely client-side. Takes raw PCM; decoding lives in a separate package.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./fft": "./src/fft.mjs",
+    "./dsp": "./src/dsp.mjs",
+    "./audio": "./src/audio.mjs",
+    "./chroma": "./src/chroma.mjs",
+    "./discovery": "./src/discovery.mjs",
+    "./features": "./src/features.mjs",
+    "./refine": "./src/refine.mjs"
+  },
+  "files": ["src", "README.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test/regression.mjs && node test/integration.mjs",
+    "test:unit": "node test/regression.mjs",
+    "test:integration": "node test/integration.mjs",
+    "spike": "node spike/run-node.mjs"
+  },
+  "keywords": ["audio", "music-detection", "audio-segmentation", "browser", "webcodecs", "dsp"],
+  "license": "MIT",
+  "dependencies": {}
+}
