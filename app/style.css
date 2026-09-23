@@ -49,6 +49,12 @@ fieldset.features label { display:flex; gap:.7rem; align-items:flex-start; paddi
 fieldset.features strong { display:block; font-weight:600; }
 fieldset.features em { display:block; color:var(--dim); font-style:normal; font-size:.85rem; }
 
+.status {
+  margin:1rem 0 0; padding:.5rem .8rem; border-radius:6px; font-size:.88rem;
+  background:var(--panel); border-left:3px solid var(--accent); color:#cfe3ff;
+}
+.status.error { border-left-color:var(--warn); color:#f0d3a8; }
+
 .banner { background:#20303f; border-left:3px solid var(--accent); color:#cfe3ff;
   padding:.7rem 1rem; border-radius:6px; margin:1.5rem 0; font-size:.9rem; }
 

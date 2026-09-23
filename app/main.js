@@ -46,13 +46,15 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles([...e.dataTransfer.files]); };
 
 function addFiles(files) {
+  let added = 0;
   for (const f of files) {
     const id = (f.name.match(/S\d+E\d+/) || [f.name.replace(/\.[^.]+$/, '')])[0];
     if (state.files.some((x) => x.id === id)) continue;
     state.files.push({ id, file: f, status: 'queued', progress: 0 });
+    added++;
   }
   renderFiles();
-  updateAnalyzeButton();
+  if (added) autoRun();
 }
 
 function renderFiles() {
@@ -68,10 +70,43 @@ function renderFiles() {
 }
 
 const pendingFiles = () => state.files.filter((f) => f.status === 'queued' || f.status === 'error');
-function updateAnalyzeButton() {
-  const n = pendingFiles().length;
-  $('analyze').disabled = n === 0;
-  $('analyze').textContent = n ? `Analyse ${n} file${n > 1 ? 's' : ''}` : 'Analyse';
+
+let running = false;
+let rerun = false;
+
+/**
+ * Everything happens without a button: adding files analyses them, and changing
+ * a setting re-runs detection. Phase 1 is skipped when nothing is pending, so
+ * toggling a feature after the fact costs nothing — the analyses are already in
+ * memory.
+ *
+ * Serialised: dropping more files mid-run just sets `rerun`, so two runs can
+ * never interleave and corrupt `state.analyses`.
+ */
+async function autoRun() {
+  if (running) { rerun = true; return; }
+  running = true;
+  try {
+    do {
+      rerun = false;
+      if (pendingFiles().length) {
+        setStatus(`Analysing ${pendingFiles().length} file(s)…`);
+        await analyzePool();
+      }
+      if (state.analyses.length) await runDetection();
+    } while (rerun);
+  } catch (err) {
+    setStatus(`Failed: ${err.message}`, true);
+  } finally {
+    running = false;
+  }
+}
+
+function setStatus(text, isError = false) {
+  const el = $('status');
+  el.textContent = text ?? '';
+  el.hidden = !text;
+  el.classList.toggle('error', isError);
 }
 
 /* ------------------------------------------------------- worker pool -- */
@@ -117,30 +152,20 @@ async function analyzePool() {
 
 /* ------------------------------------------------------------ analyse -- */
 
-$('analyze').onclick = async () => {
-  $('analyze').disabled = true;
-  $('analyze').textContent = 'Analysing…';
-  try {
-    const n = await analyzePool();
-    if (!n) throw new Error('nothing could be analysed — see the file list');
-    await runDetection();
-  } catch (err) {
-    alert(`Analysis failed: ${err.message}`);
-  } finally {
-    updateAnalyzeButton();
-  }
-};
-
 async function runDetection() {
   const wantThemes = $('featThemes').checked;
   const topN = Math.max(1, Math.min(20, Number($('topN').value) || 5));
 
   if (!wantThemes && !$('featMusic').checked) {
-    alert('Enable at least one of "Common themes" or "General music".');
+    $('verify').hidden = true;
+    setStatus('Nothing selected — enable a feature to find music.');
     return;
   }
+  setStatus('Finding music…');
 
-  const { library, assets } = discoverAssets(state.analyses, wantThemes ? {} : { topN: 0 });
+  // discovery always runs: even with themes off, general music needs a music
+  // exemplar to calibrate its discriminant on.
+  const { library, assets } = discoverAssets(state.analyses, {});
   state.library = library;
   state.assets = assets;
   state.shown = wantThemes ? assets.slice(0, topN) : [];
@@ -152,7 +177,12 @@ async function runDetection() {
   renderMusicNote();
   $('verify').hidden = false;
   $('done').hidden = true;
-  $('verify').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const failed = state.files.filter((f) => f.status === 'error').length;
+  const bits = [`${state.analyses.length} file(s) analysed`];
+  if (wantThemes) bits.push(`${state.shown.length} clip(s) found`);
+  if (failed) bits.push(`${failed} failed`);
+  setStatus(bits.join(' · '));
 }
 
 /* --------------------------------------------------------- clip list -- */
@@ -260,24 +290,39 @@ function renderMatrix() {
 
 /* ------------------------------------------------------ general music -- */
 
+/**
+ * Assets used to calibrate general-music detection: the ticked clips if any,
+ * otherwise the most prevalent ones found. Without a music exemplar the
+ * discriminant has nothing to learn from, so this never returns empty while any
+ * asset exists.
+ */
+function calibrationExemplars() {
+  const picked = [...state.selected].map((i) => state.shown[i]).filter(Boolean);
+  if (picked.length) return picked;
+  return state.assets.slice(0, 3);
+}
+
 function renderMusicNote() {
-  const on = $('featMusic').checked;
-  const exemplars = [...state.selected].map((i) => state.shown[i]).filter(Boolean);
-  if (!on) { $('musicNote').textContent = 'General music removal is off.'; return; }
-  if (!exemplars.length) {
-    $('musicNote').innerHTML =
-      'General music needs a music example to calibrate on, and none is selected. ' +
-      'Tick at least one common theme above, or leave it off.';
+  if (!$('featMusic').checked) {
+    $('musicNote').textContent = 'General music removal is off.';
     return;
   }
+  const ex = calibrationExemplars();
+  if (!ex.length) {
+    $('musicNote').textContent =
+      'General music needs at least one music example to calibrate on, and none was found.';
+    return;
+  }
+  const picked = [...state.selected].length > 0;
   $('musicNote').textContent =
-    `Calibrated on ${exemplars.length} selected clip${exemplars.length > 1 ? 's' : ''}. ` +
+    `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
     'Music detected inside each episode will also be removed. ' +
     'This stage is assistive — it runs close to its decision boundary, so review the output.';
 }
 
-$('featMusic').onchange = renderMusicNote;
-$('featThemes').onchange = () => { renderClips(); renderMatrix(); renderMusicNote(); };
+$('featMusic').onchange = () => autoRun();
+$('featThemes').onchange = () => autoRun();
+$('topN').onchange = () => autoRun();
 
 /* ---------------------------------------------------------- export -- */
 
@@ -310,8 +355,10 @@ $('export').onclick = async () => {
         }
       }
     }
-    if (wantMusic && clips.length) {
-      for (const r of musicRangesFor(state.library, clips, {})) {
+    if (wantMusic) {
+      // calibration may use unselected assets; only ticked clips contribute
+      // their own ranges, so an unticked clip is never removed.
+      for (const r of musicRangesFor(state.library, calibrationExemplars(), {})) {
         for (const [a, b] of r.ranges) add(r.id, a, b);
       }
     }
