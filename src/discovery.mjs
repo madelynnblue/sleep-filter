@@ -150,6 +150,17 @@ export function fingerprint(samples, opts = {}) {
 
 /* ----------------------------------------------------------- discovery -- */
 
+/**
+ * Label an asset by WHERE it sits and how long it is — never by what it sounds
+ * like. 'title-theme' means "averages a start in the first third and runs under
+ * 90s", which is where a title theme usually is; a recurring cue that happens to
+ * land there gets the same label, and a real theme after a long cold open lands
+ * in 'other-recurring' instead.
+ *
+ * These are display names, not assertions. Ranking does not use them by default
+ * (rankBy defaults to 'support'), and the UI lets the user audition every clip
+ * and decide for themselves.
+ */
 function classify(meanStart, duration, span) {
   if (meanStart > duration * 0.85) return 'end-credits';
   if (span < 4) return 'sting';
