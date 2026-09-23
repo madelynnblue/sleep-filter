@@ -100,6 +100,17 @@ const maxErr = Math.max(...errs, 0);
 ok(`theme positions within 1.5s of ground truth (n=${errs.length}, mean ${meanErr.toFixed(2)}s, max ${maxErr.toFixed(2)}s)`,
    errs.length >= files.length - 2 && meanErr < 1.5 && maxErr < 2.5);
 
+// The refined extent is what the cutter actually uses, and refineAsset measures
+// it independently of the fingerprint extent discover() vets — so it needs its
+// own ceiling. Tightening it below every real occurrence (11.2s here) must
+// therefore discard them all.
+{
+  const tight = lib.refine(disc.candidates, { maxSpanSec: 5 });
+  const longest = Math.max(0, ...tight.flatMap((a) => a.episodes.map((e) => e.span ?? 0)));
+  ok(`refined-extent cap is active (5s cap -> ${tight.length} asset(s), longest ${longest.toFixed(1)}s)`,
+     tight.length < assets.length && longest <= 5);
+}
+
 // the known-atypical episode must not be handed a confident position
 const weird = refined.episodes.find((e) => e.id === 'S02E03');
 ok('atypical episode (S02E03) is absent or low-confidence, not silently placed',

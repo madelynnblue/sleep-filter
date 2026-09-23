@@ -32,6 +32,11 @@ export function refineAsset(chromas, asset, opts = {}) {
     padSec = 5,          // profile context on each side
     shrink = 0.15,       // core used for offset search, shrunk to stay inside
     minSpanSec = 2,
+    // Longest a refined occurrence may be. discover() already refuses to treat a
+    // smeared fingerprint extent as an occurrence, but the extent recorded here
+    // is measured independently off the chroma profile and is bounded by nothing
+    // — and it is the one the cutter actually uses.
+    maxSpanSec = 90,
     boundary = 'threshold', // 'threshold' | 'gradient'
     gradSmooth = 4,
     extent = 'envelope',     // 'perEpisode' | 'envelope'
@@ -231,8 +236,22 @@ export function refineAsset(chromas, asset, opts = {}) {
       (a.start ?? 0) - (b.start ?? 0)
   );
 
+  // The ceiling belongs HERE, on the final extent, not on the per-episode
+  // measurements that feed it: the extent that gets cut is the envelope extent
+  // assigned just above, and that can be far longer than the run each episode
+  // measured on its own. Same failure as stage 1's minutes-long 'clips' — an
+  // episode wrongly cut loses dialogue, one wrongly marked absent merely keeps
+  // its music.
+  for (const e of episodes) {
+    if (e.present !== false && (e.span ?? 0) > maxSpanSec) {
+      e.present = false; e.start = null; e.end = null; e.span = 0;
+    }
+  }
+
   const present = episodes.filter((e) => e.present !== false);
   const absent = episodes.filter((e) => e.present === false).map((e) => e.id);
+  // Every occurrence measured too long to be one cue: nothing was located.
+  if (!present.length) return null;
   const spans = present.map((e) => e.span).sort((a, b) => a - b);
   const meanStart = present.length
     ? present.reduce((s, e) => s + e.start, 0) / present.length

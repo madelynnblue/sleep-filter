@@ -17,7 +17,7 @@
 
 import {
   EpisodeAnalyzer, Library, computeChroma, computeFeatures, fingerprint,
-  MonoResampler, segmentEpisode, preferredInput,
+  MonoResampler, segmentEpisode, segment, preferredInput,
 } from '../src/index.mjs';
 import { NFEAT } from '../src/features.mjs';
 
@@ -353,6 +353,32 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   const closed = gated(8);
   ok(`level gate on: the loud cue survives (${closed.length})`, covers(closed, 16));
   ok('level gate on: the 18 dB quieter cue of identical timbre is dropped', !covers(closed, 42));
+}
+
+/* ------------------------------------------- music stage length cap -- */
+//
+// The theme stage refuses to treat a minutes-long smear as an occurrence. The
+// music stage needs the same ceiling, because a run that never closes would be
+// proposed as one enormous cut — and enabled by default.
+{
+  const FPS = 15.625, SECONDS = 600;
+  const n = Math.round(SECONDS * FPS);
+  const scores = new Float32Array(n).fill(-1);
+
+  // 320s of a 600s episode — the shape a misfire over a long stretch takes
+  for (let i = Math.round(60 * FPS); i < Math.round(380 * FPS); i++) scores[i] = 1;
+
+  const loose = segment(scores, FPS, { mid: 0, maxFractionOfEpisode: 1 });
+  const capped = segment(scores, FPS, { mid: 0 });            // default 0.25
+  ok(`music cap off: a 320s run over a 600s episode is proposed (${loose.length})`,
+     loose.length === 1);
+  ok('music cap on: that run is dropped', capped.length === 0);
+
+  // an ordinary cue must be untouched
+  const small = new Float32Array(n).fill(-1);
+  for (let i = Math.round(60 * FPS); i < Math.round(75 * FPS); i++) small[i] = 1;
+  ok('music cap on: a 15s cue of the same episode survives',
+     segment(small, FPS, { mid: 0 }).length === 1);
 }
 
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);

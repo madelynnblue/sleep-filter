@@ -240,6 +240,14 @@ export function segment(scores, fps, opts = {}) {
     // raising this from 1.5s to 4s cut non-theme flagging from 25% to 9.4%
     // while keeping theme recall at 100%. Real music cues are rarely under 4s.
     minDuration = 4.0,
+    // Ceiling on one cue, as a fraction of the episode. A single cue cannot be a
+    // large part of an episode, and this is the failure mode that produced
+    // 658-second 'clips' in the theme stage: the discriminant misfires over a
+    // long stretch and the run never closes. Relative rather than absolute so it
+    // still means something on a 45-minute episode. On this corpus the longest
+    // real segment is 38.7s, about 3% — so this is inert in practice and exists
+    // to stop a misfire becoming a ten-minute cut.
+    maxFractionOfEpisode = 0.25,
     maxGap = 0.8,      // seconds; bridge gaps up to this
     edgeFrac = 0.35,   // segment edges where the smoothed score crosses this fraction
     // Minimum peak score. Genuine music cues measure ~1.9-2.9; the one verified
@@ -305,6 +313,8 @@ export function segment(scores, fps, opts = {}) {
     let a = r.a, b = r.b;
     while (a > 0 && sm[a - 1] > edge) a--;
     while (b < n - 1 && sm[b + 1] > edge) b++;
+    // Checked after edge refinement, since the refined extent is what gets cut.
+    if ((b + 1 - a) / fps > maxFractionOfEpisode * (n / fps)) continue;
     out.push({
       start: a / fps,
       end: (b + 1) / fps,
