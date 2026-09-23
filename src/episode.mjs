@@ -39,7 +39,34 @@ const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
  * so this is approximate by design; the property that matters is that the meter
  * keeps moving at a roughly even rate.
  */
-const STAGE_SHARE = { decode: 0.40, chroma: 0.178, features: 0.299, fingerprints: 0.123 };
+const STAGE_SHARE = { decode: 0.475, chroma: 0, features: 0.375, fingerprints: 0.15 };
+
+/**
+ * Profile for the un-fused path, used only when just one of chroma/segments is
+ * requested. The fused path is not simply the sum of these two — it removes a
+ * whole STFT pass — so its split is genuinely different and cannot be derived
+ * from this one.
+ */
+const STAGE_SHARE_SPLIT = { decode: 0.40, chroma: 0.178, features: 0.293, fingerprints: 0.127 };
+
+/**
+ * Weights for the stages that will actually run, summing to 1.
+ *
+ * `foldChromaIntoFeatures` covers the fused path, where one STFT pass produces
+ * both — chroma's share belongs to features there, or the meter tops out short
+ * of the end.
+ */
+function normaliseShares(shares, { chroma, features, fingerprints, foldChromaIntoFeatures = false }) {
+  const w = { decode: shares.decode ?? 0 };
+  w.chroma = chroma ? (shares.chroma ?? 0) : 0;
+  w.features = (features ? (shares.features ?? 0) : 0) +
+               (foldChromaIntoFeatures ? (shares.chroma ?? 0) : 0);
+  w.fingerprints = fingerprints ? (shares.fingerprints ?? 0) : 0;
+  const total = w.decode + w.chroma + w.features + w.fingerprints;
+  if (!(total > 0)) return { decode: 1, chroma: 0, features: 0, fingerprints: 0 };
+  for (const k of Object.keys(w)) w[k] /= total;
+  return w;
+}
 
 /** Mean frame level, in dB, over [from, to) seconds. Feature 0 is logRms. */
 const LOG_RMS = 0;
@@ -109,7 +136,9 @@ export class EpisodeAnalyzer {
     this.targetSampleRate = opts.targetSampleRate ?? DEFAULT_SAMPLE_RATE;
     this.inputSampleRate = opts.inputSampleRate ?? null;
     this.inputChannels = opts.inputChannels ?? null;
-    this.shares = opts.shares ?? STAGE_SHARE;
+    this._customShares = opts.shares ?? null;
+    this.shares = this._customShares ?? STAGE_SHARE;
+    this._w = normaliseShares(this.shares, { chroma: true, features: true, fingerprints: true });
     this.timings = {};             // ms spent per stage, filled in as they run
     this._resampler = null;
     this._samples = new SampleBuffer();
@@ -180,7 +209,7 @@ export class EpisodeAnalyzer {
     const decodeFrac = this._decodeDone
       ? 1
       : Math.min(1, this._receivedFrames / this._expectedFrames);
-    const w = this.shares;
+    const w = this._w;
     return Math.min(1,
       (w.decode ?? 0) * decodeFrac +
       (w.chroma ?? 0) * this._stage.chroma +
@@ -198,6 +227,15 @@ export class EpisodeAnalyzer {
   finish(opts = {}) {
     const { chroma = true, fingerprints = true, segments = true } = opts;
     this._decodeDone = true;
+    // Re-weight for the stages that will actually run. The fused path does not
+    // run a chroma stage at all, so without this its share would go unspent and
+    // the meter could never reach 1.
+    this._w = normaliseShares(
+      this._customShares ?? (chroma && segments ? STAGE_SHARE : STAGE_SHARE_SPLIT),
+      {
+        chroma: chroma && !segments, features: segments, fingerprints,
+        foldChromaIntoFeatures: chroma && segments,
+      });
     const samples = this._samples.view();
     const sampleRate = this.targetSampleRate;
 
@@ -223,12 +261,22 @@ export class EpisodeAnalyzer {
       return value;
     };
 
-    if (chroma) out.chroma = run('chroma', (p) => computeChroma(samples, { sampleRate, onProgress: p }));
+    if (segments && chroma) {
+      // One STFT pass for both. They frame the signal identically and features
+      // already has every magnitude chroma needs, so this is measurably cheaper
+      // than a pass each (1.97s -> 1.27s over three episodes).
+      out.features = run('features', (p) => computeFeatures(samples, {
+        sampleRate, onProgress: p, alsoChroma: true,
+      }));
+      out.chroma = out.features.chroma;
+      delete out.features.chroma;      // it is not a feature
+    } else {
+      if (chroma) out.chroma = run('chroma', (p) => computeChroma(samples, { sampleRate, onProgress: p }));
+      if (segments) out.features = run('features', (p) => computeFeatures(samples, {
+        sampleRate, onProgress: p, chroma: out.chroma ?? null,
+      }));
+    }
     if (fingerprints) out.fingerprints = run('fingerprints', (p) => fingerprint(samples, { sampleRate, onProgress: p }));
-    // hand features the chroma pass we just ran instead of letting it redo it
-    if (segments) out.features = run('features', (p) => computeFeatures(samples, {
-      sampleRate, onProgress: p, chroma: out.chroma ?? null,
-    }));
     return out;
   }
 }

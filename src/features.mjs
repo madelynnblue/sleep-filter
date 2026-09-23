@@ -28,7 +28,7 @@ import { biquadBandpass, applyBiquad, movingAvgAbs, movAvgSq } from './dsp.mjs';
  * Pure JS, browser-portable.
  */
 
-import { computeChroma } from './chroma.mjs';
+import { computeChroma, pitchClassMap, finalizeChroma } from './chroma.mjs';
 
 export const FEATURE_NAMES = ['logRms', 'lowRatio', 'flatness', 'flux', 'mod4', 'chromaSelf'];
 
@@ -57,6 +57,14 @@ export function computeFeatures(samples, opts = {}) {
     fLow = 250,     // "bass" band edge
     chroma: providedChroma = null,
     onProgress = null,
+    // Accumulate chroma in this function's own STFT pass instead of running a
+    // second one. The magnitudes and the window are identical, so this is one
+    // pass where there would otherwise be two.
+    alsoChroma = false,
+    fmin = 55,
+    fmax = 4000,
+    center = true,
+    gateFrac = 0.02,
   } = opts;
 
   // chromaSelf needs a chroma pass, which is ~40% of this stage. finish()
@@ -64,23 +72,32 @@ export function computeFeatures(samples, opts = {}) {
   // paying for an identical second pass — worth about a second per 22-minute
   // episode. When this function runs one itself it reports through it, because
   // leaving that 40% unmetered is what made the bar stall in the middle.
+  const half = nfft >> 1;
+  const nFrames = Math.max(0, Math.floor((samples.length - nfft) / hop) + 1);
+  const fps = sampleRate / hop;
+
+  // Fused chroma accumulation, done inside this function's own STFT pass. The
+  // bin order matches computeChroma exactly, so the result is bit-identical.
+  const pc = alsoChroma ? pitchClassMap(half + 1, sampleRate, nfft, fmin, fmax) : null;
+  const C = alsoChroma ? new Float32Array(nFrames * 12) : null;
+  const norms = alsoChroma ? new Float32Array(nFrames) : null;
+
+  // chromaSelf needs chroma. Three ways to get it: handed over, accumulated
+  // here, or a pass of its own — and NOT a fourth, which is what an earlier
+  // version did by accumulating it here and then also computing it separately.
   let chroma = providedChroma;
   if (chroma) {
-    const expected = Math.max(0, Math.floor((samples.length - nfft) / hop) + 1);
-    if (chroma.nFrames !== expected) {
+    if (chroma.nFrames !== nFrames) {
       throw new Error('computeFeatures: provided chroma was not computed with this nfft/hop');
     }
-  } else {
+  } else if (!alsoChroma) {
     chroma = computeChroma(samples, {
       sampleRate, nfft, hop,
       onProgress: onProgress ? (f) => onProgress(f * CHROMA_SHARE) : undefined,
     });
   }
-  const base = providedChroma ? 0 : CHROMA_SHARE;
+  const base = (providedChroma || alsoChroma) ? 0 : CHROMA_SHARE;
   const report = onProgress ? (f) => onProgress(base + (1 - base) * f) : null;
-
-  const nFrames = chroma.nFrames;
-  const half = nfft >> 1;
 
   // --- one STFT pass for the spectral features ---
   const win = new Float32Array(nfft);
@@ -118,11 +135,28 @@ export function computeFeatures(samples, opts = {}) {
     const mag = magBuf[t & 1];
     const prevMag = t > 0 ? magBuf[(t - 1) & 1] : null;
     realSpectrum(re, FT, mag, power, scratch);
-    for (let k = 0; k <= half; k++) {
-      const p = power[k];
-      tot += p;
-      if (k <= lowBin) low += p;
-      logSum += Math.log(p + 1e-12);
+    // Two variants rather than one loop with a branch: testing `pc` per bin per
+    // frame deoptimised this loop badly enough to cost more than the whole pass
+    // it was meant to save.
+    if (pc === null) {
+      for (let k = 0; k <= half; k++) {
+        const p = power[k];
+        tot += p;
+        if (k <= lowBin) low += p;
+        logSum += Math.log(p + 1e-12);
+      }
+    } else {
+      const cbase = t * 12;
+      let ce = 0;
+      for (let k = 0; k <= half; k++) {
+        const p = power[k];
+        tot += p;
+        if (k <= lowBin) low += p;
+        logSum += Math.log(p + 1e-12);
+        const c = pc[k];
+        if (c >= 0) { C[cbase + c] += mag[k]; ce += mag[k]; }
+      }
+      norms[t] = ce;
     }
     lowRatio[t] = tot > 0 ? low / tot : 0;
     // spectral flatness: geometric mean / arithmetic mean of power
@@ -150,7 +184,6 @@ export function computeFeatures(samples, opts = {}) {
   // itself in the 3-6 Hz range and compare that energy to the envelope's total
   // AC energy.
   const ENV_HZ = 100;
-  const fps = chroma.frameRate;
   const mod4 = new Float32Array(nFrames);
   {
     const bandDefs = [[80, 300], [300, 800], [800, 2000], [2000, 4000]];
@@ -197,6 +230,10 @@ export function computeFeatures(samples, opts = {}) {
 
   report?.(MOD_SHARE);
 
+  // finalise the fused chroma before anything reads it
+  if (alsoChroma) finalizeChroma(C, norms, nFrames, { center, gateFrac });
+  const chromaC = alsoChroma ? C : chroma.C;
+
   // --- chroma self-similarity: music holds harmony and repeats, speech does not ---
   const chromaSelf = new Float32Array(nFrames);
   const lags = [Math.round(0.5 * fps), Math.round(1.0 * fps), Math.round(2.0 * fps)];
@@ -205,7 +242,7 @@ export function computeFeatures(samples, opts = {}) {
     for (const L of lags) {
       if (t + L >= nFrames) continue;
       let s = 0;
-      for (let c = 0; c < 12; c++) s += chroma.C[t * 12 + c] * chroma.C[(t + L) * 12 + c];
+      for (let c = 0; c < 12; c++) s += chromaC[t * 12 + c] * chromaC[(t + L) * 12 + c];
       if (s > best) best = s;
     }
     chromaSelf[t] = best;
@@ -224,7 +261,11 @@ export function computeFeatures(samples, opts = {}) {
   }
 
   report?.(1);
-  return { feats, nFrames, frameRate: fps, duration: samples.length / sampleRate, logRms };
+  const out = { feats, nFrames, frameRate: fps, duration: samples.length / sampleRate, logRms };
+  if (alsoChroma) {
+    out.chroma = { C, nFrames, frameRate: fps, duration: samples.length / sampleRate };
+  }
+  return out;
 }
 
 /**

@@ -505,6 +505,38 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   ok('a mismatched chroma is rejected rather than misused', threw);
 }
 
+/* ------------------------------------------------ fused spectral pass -- */
+//
+// finish() accumulates chroma inside computeFeatures' own STFT pass instead of
+// running a second one. That has to be exactly equivalent, not merely close,
+// because chroma feeds the refinement stage that positions every cut.
+{
+  const x = cat(musicSignal(20 * RATE), speechSignal(20 * RATE));
+  const solo = computeChroma(x, { sampleRate: RATE });
+  const apart = computeFeatures(x, { sampleRate: RATE, chroma: solo });
+  const fused = computeFeatures(x, { sampleRate: RATE, alsoChroma: true });
+
+  ok('fused chroma is bit-identical to a standalone pass',
+     solo.C.length === fused.chroma.C.length && solo.C.every((v, i) => v === fused.chroma.C[i]));
+  ok('fused features are bit-identical to the split path',
+     apart.feats.length === fused.feats.length && apart.feats.every((v, i) => v === apart.feats[i]));
+
+  // The fused path runs no chroma stage at all, so its share has to be folded
+  // into features. Left unspent, the meter tops out around 0.82 and never ends.
+  const a = new EpisodeAnalyzer({ id: 'fused-progress' });
+  a.addChunk({
+    sampleRate: RATE, numberOfFrames: x.length, numberOfChannels: 1,
+    format: 'f32-planar', data: [x],
+  });
+  a.expectedFrames = x.length;
+  const seen = [];
+  a.finish({ onProgress: (p) => seen.push(p) });
+  ok(`progress still reaches 1 when chroma is fused (${(seen.at(-1) * 100).toFixed(1)}%)`,
+     Math.abs(seen.at(-1) - 1) < 1e-9);
+  ok('and the fused progress is monotonic',
+     seen.every((p, i) => i === 0 || p >= seen[i - 1] - 1e-9));
+}
+
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

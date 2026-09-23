@@ -29,6 +29,50 @@ import { makeFFT, realSpectrum } from './fft.mjs';
  * @returns {{C: Float32Array, nFrames: number, frameRate: number, duration: number}}
  *   C is flat, stride 12 (frame-major).
  */
+/**
+ * Map each FFT bin to a pitch class, or -1 outside the band.
+ *
+ * Shared with computeFeatures' fused path so the two cannot drift apart.
+ */
+export function pitchClassMap(nBins, sampleRate, nfft, fmin = 55, fmax = 4000) {
+  const pc = new Int8Array(nBins).fill(-1);
+  for (let k = 0; k < nBins; k++) {
+    const f = (k * sampleRate) / nfft;
+    if (f >= fmin && f <= fmax) {
+      const p = Math.round(12 * Math.log2(f / 440));
+      pc[k] = ((p % 12) + 12) % 12;
+    }
+  }
+  return pc;
+}
+
+/**
+ * Centre, gate and L2-normalise raw chroma. Split out so computeFeatures can
+ * accumulate C in its own STFT pass and then finish it identically.
+ */
+export function finalizeChroma(C, norms, nFrames, { center = true, gateFrac = 0.02 } = {}) {
+  if (center) {
+    const mean = new Float64Array(12);
+    for (let t = 0; t < nFrames; t++) for (let c = 0; c < 12; c++) mean[c] += C[t * 12 + c];
+    for (let c = 0; c < 12; c++) mean[c] /= Math.max(nFrames, 1);
+    for (let t = 0; t < nFrames; t++) for (let c = 0; c < 12; c++) C[t * 12 + c] -= mean[c];
+  }
+
+  // gate near-silent frames, then L2 normalise
+  const sorted = Float32Array.from(norms).sort();
+  const median = nFrames ? sorted[nFrames >> 1] : 0;
+  const gate = median * gateFrac;
+  for (let t = 0; t < nFrames; t++) {
+    const base = t * 12;
+    if (norms[t] < gate) { for (let c = 0; c < 12; c++) C[base + c] = 0; continue; }
+    let s = 0;
+    for (let c = 0; c < 12; c++) s += C[base + c] * C[base + c];
+    s = Math.sqrt(s);
+    if (s > 0) for (let c = 0; c < 12; c++) C[base + c] /= s;
+  }
+  return C;
+}
+
 export function computeChroma(samples, opts = {}) {
   const {
     sampleRate = 8000,
@@ -42,16 +86,7 @@ export function computeChroma(samples, opts = {}) {
 
   const T = makeFFT(nfft);
   const nBins = T.half + 1;
-
-  // map each FFT bin to a pitch class (or -1 outside the band)
-  const pc = new Int8Array(nBins).fill(-1);
-  for (let k = 0; k < nBins; k++) {
-    const f = (k * sampleRate) / nfft;
-    if (f >= fmin && f <= fmax) {
-      let p = Math.round(12 * Math.log2(f / 440));
-      pc[k] = ((p % 12) + 12) % 12;
-    }
-  }
+  const pc = pitchClassMap(nBins, sampleRate, nfft, fmin, fmax);
 
   const nFrames = Math.max(0, Math.floor((samples.length - nfft) / hop) + 1);
   const win = new Float32Array(nfft);
@@ -85,25 +120,7 @@ export function computeChroma(samples, opts = {}) {
     if (onProgress && t % tickEvery === 0) onProgress(t / nFrames);
   }
 
-  if (center) {
-    const mean = new Float64Array(12);
-    for (let t = 0; t < nFrames; t++) for (let c = 0; c < 12; c++) mean[c] += C[t * 12 + c];
-    for (let c = 0; c < 12; c++) mean[c] /= Math.max(nFrames, 1);
-    for (let t = 0; t < nFrames; t++) for (let c = 0; c < 12; c++) C[t * 12 + c] -= mean[c];
-  }
-
-  // gate near-silent frames, then L2 normalise
-  const sorted = Float32Array.from(norms).sort();
-  const median = nFrames ? sorted[nFrames >> 1] : 0;
-  const gate = median * gateFrac;
-  for (let t = 0; t < nFrames; t++) {
-    const base = t * 12;
-    if (norms[t] < gate) { for (let c = 0; c < 12; c++) C[base + c] = 0; continue; }
-    let s = 0;
-    for (let c = 0; c < 12; c++) s += C[base + c] * C[base + c];
-    s = Math.sqrt(s);
-    if (s > 0) for (let c = 0; c < 12; c++) C[base + c] /= s;
-  }
+  finalizeChroma(C, norms, nFrames, { center, gateFrac });
 
   onProgress?.(1);
   return { C, nFrames, frameRate: sampleRate / hop, duration: samples.length / sampleRate };
