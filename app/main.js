@@ -23,7 +23,7 @@ const state = {
   assets: [],         // all discovered
   shown: [],          // the top N actually displayed
   selected: new Set(),// indices into `shown` that the user wants removed
-  previews: new Map(),// clip index -> { url, loading }
+  previews: new Map(),// play key -> { url, audio } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
   collapsed: new Set(),
   outDir: null,
@@ -69,10 +69,12 @@ function renderFiles() {
       : f.status === 'running' ? `${((f.progress ?? 0) * 100).toFixed(0)}%`
       : f.status === 'error' ? `error: ${f.error}`
       : 'queued';
-    return `<li><span class="id">${f.id}</span>` +
+    return `<li>${playButton(`ep:${f.id}`, 'Play this episode')}` +
+           `<span class="id">${f.id}</span>` +
            `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
            `<span class="st ${f.status}">${label}</span></li>`;
   }).join('');
+  wirePlayButtons($('filelist'));
 }
 
 const pendingFiles = () => state.files.filter((f) => f.status === 'queued' || f.status === 'error');
@@ -176,7 +178,10 @@ async function runDetection() {
   state.assets = assets;
   state.shown = wantThemes ? assets.slice(0, topN) : [];
   state.selected = new Set(state.shown.map((_, i) => i));
-  state.previews.clear();
+  // theme: and music: keys name a *position* in the result, so re-detection can
+  // point them at different audio; their previews must not outlive the run that
+  // produced them. Episodes are the file itself and stay playable throughout.
+  clearPreviews((key) => key.startsWith('ep:'));
 
   renderClips();
   renderMatrix();
@@ -214,7 +219,7 @@ function renderClips() {
     const example = region ? `${region.id} @ ${fmtTime(region.start)}` : 'no example';
     return `<li>
       <input type="checkbox" class="pick" data-i="${i}" ${state.selected.has(i) ? 'checked' : ''}>
-      <button class="play" data-i="${i}" type="button" title="Play an example">▶</button>
+      ${playButton(`theme:${i}`, 'Play an example')}
       <span class="kind">${a.kind}</span>
       <span class="meta">
         ${a.span.toFixed(1)}s &middot;
@@ -236,40 +241,154 @@ function renderClips() {
       renderMusic();
     };
   });
-  $('clips').querySelectorAll('.play').forEach((el) => {
-    el.onclick = () => playClip(Number(el.dataset.i), el);
-  });
+  wirePlayButtons($('clips'));
 }
 
-async function playClip(i, button) {
-  const cached = state.previews.get(i);
-  if (cached?.url) { new Audio(cached.url).play(); return; }
+/* -------------------------------------------------------- auditioning -- */
+
+/*
+ * One player for every sound on the page: a recurring clip, a proposed music
+ * cut, a whole episode. Each playable thing is named by a string key
+ * ("theme:0", "music:S01E01:3", "ep:S01E01") that resolves either to a byte
+ * range to decode, or to the original file, which the browser streams itself.
+ *
+ * Only one thing sounds at a time, and every way playback can stop routes
+ * through stopAudition(), so no button can be left showing a pause icon for
+ * audio that is not playing.
+ */
+
+const PLAY_TITLE = 'Play';
+let audition = { key: null, audio: null };
+
+/** Resolve a play key to the audio it names, or null if that audio is gone. */
+function sourceFor(key) {
+  const [kind, a, b] = key.split(':');
+  const entryFor = (id) => state.files.find((f) => f.id === id);
+
+  if (kind === 'theme') {
+    const asset = state.shown[Number(a)];
+    const region = asset && exampleRegion(asset);
+    const found = region && entryFor(region.id);
+    return found ? { file: found.file, start: region.start, end: region.end } : null;
+  }
+
+  const entry = entryFor(a);
+  if (!entry) return null;
+
+  if (kind === 'ep') {
+    // hand the original file straight to the browser: nothing to decode, and no
+    // second copy of a 20-minute episode in memory
+    return { file: entry.file, direct: true };
+  }
+  if (kind === 'music') {
+    const seg = state.music.find((x) => x.id === a)?.segments[Number(b)];
+    return seg ? { file: entry.file, start: seg.start, end: seg.end } : null;
+  }
+  return null;
+}
+
+/** Prepare the audio behind `key`: decode a range, or open the whole file. */
+async function loadAudio(key) {
+  const src = sourceFor(key);
+  if (!src) throw new Error('that audio is no longer available');
+
+  const url = src.direct
+    ? URL.createObjectURL(src.file)
+    : URL.createObjectURL((await extractClipWav(src.file, src.start, src.end, { decode: {} })).blob);
+  return { url, audio: new Audio(url) };
+}
+
+/** Markup for a play button. Reads the live player state, so a list re-rendered
+ *  part-way through playback still shows the pause icon. */
+function playButton(key, title = PLAY_TITLE) {
+  const on = audition.key === key;
+  return `<button class="play${on ? ' playing' : ''}" type="button" data-key="${key}" ` +
+    `data-title="${title}" title="${on ? 'Pause' : title}">${on ? '⏸' : '▶'}</button>`;
+}
+
+/** Every play button on the page is wired the same way. */
+function wirePlayButtons(root) {
+  for (const el of root.querySelectorAll('button.play')) {
+    el.onclick = () => playKey(el.dataset.key, el);
+  }
+}
+
+// Flip every button for `key` to the right icon. Re-queried rather than
+// captured, because the render functions rebuild these buttons underneath us.
+function setPlayIcon(key, playing) {
+  for (const el of document.querySelectorAll('button.play')) {
+    if (el.dataset.key !== key) continue;
+    el.textContent = playing ? '⏸' : '▶';
+    el.title = playing ? 'Pause' : (el.dataset.title || PLAY_TITLE);
+    el.classList.toggle('playing', playing);
+  }
+}
+
+// Stop whatever is sounding. Every stop funnels through here — second click,
+// another clip, a re-render, the audio ending — so the pause icon can never be
+// stranded on a button.
+function stopAudition() {
+  if (!audition.key) return;
+  const { key, audio } = audition;
+  audition = { key: null, audio: null };
+  if (audio) {
+    audio.pause();
+    audio.currentTime = 0;   // so the next click starts it over
+  }
+  setPlayIcon(key, false);
+}
+
+// Drop prepared previews, releasing their blob URLs. `keep` decides which keys
+// survive; by default none do.
+function clearPreviews(keep = () => false) {
+  if (audition.key && !keep(audition.key)) stopAudition();
+  for (const [key, entry] of state.previews) {
+    if (keep(key)) continue;
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    state.previews.delete(key);
+  }
+}
+
+async function playKey(key, button) {
+  if (audition.key && audition.key !== key) stopAudition();
+  const cached = state.previews.get(key);
+
+  // already prepared: this click is a plain play/pause toggle
+  if (cached?.audio) {
+    if (!cached.audio.paused) { stopAudition(); return; }
+    audition = { key, audio: cached.audio };
+    setPlayIcon(key, true);
+    try {
+      await cached.audio.play();
+    } catch (err) {
+      stopAudition();
+      button.title = `Could not play: ${err.message}`;
+    }
+    return;
+  }
   if (cached?.loading) return;
 
-  const asset = state.shown[i];
-  const region = exampleRegion(asset);
-  if (!region) { button.textContent = '—'; return; }
-
-  const entry = state.files.find((f) => f.id === region.id);
-  if (!entry) { button.textContent = '—'; return; }
-
-  state.previews.set(i, { loading: true });
-  const was = button.textContent;
+  state.previews.set(key, { loading: true });
   button.textContent = '…';
   button.disabled = true;
+  let loaded = null;
   try {
-    const { blob } = await extractClipWav(entry.file, region.start, region.end, { decode: {} });
-    const url = URL.createObjectURL(blob);
-    state.previews.set(i, { url });
-    new Audio(url).play();
+    loaded = await loadAudio(key);
+    // reaching the end is the one stop we do not initiate ourselves
+    loaded.audio.onended = () => { if (audition.key === key) stopAudition(); };
+    state.previews.set(key, loaded);
+    audition = { key, audio: loaded.audio };
+    setPlayIcon(key, true);
+    await loaded.audio.play();
   } catch (err) {
-    state.previews.delete(i);
+    if (audition.key === key) audition = { key: null, audio: null };
+    if (loaded) { loaded.audio.pause(); URL.revokeObjectURL(loaded.url); }
+    state.previews.delete(key);
     button.textContent = '!';
-    button.title = `Could not extract the clip: ${err.message}`;
-    setTimeout(() => { button.textContent = was; }, 1500);
+    button.title = `Could not play: ${err.message}`;
+    setTimeout(() => { if (audition.key !== key) setPlayIcon(key, false); }, 1500);
   } finally {
     button.disabled = false;
-    if (button.textContent === '…') button.textContent = '▶';
   }
 }
 
@@ -375,13 +494,15 @@ function renderMusic() {
         rows += `<tr class="seg"><td class="pick">` +
           `<input type="checkbox" class="segPick" data-id="${ep.id}" data-i="${i}" ` +
           `${ep.enabled.has(i) ? 'checked' : ''}></td>` +
-          `<td colspan="3">${fmtTime(s.start)} – ${fmtTime(s.end)}` +
+          `<td colspan="3">${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
+          ` ${fmtTime(s.start)} – ${fmtTime(s.end)}` +
           ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
       });
     }
   }
 
   el.innerHTML = head + `<tbody>${rows}</tbody>`;
+  wirePlayButtons(el);
 
   el.querySelectorAll('.segPick').forEach((box) => {
     box.onchange = () => {

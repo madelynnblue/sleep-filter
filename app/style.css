@@ -29,6 +29,7 @@ button:disabled { opacity:.45; cursor:default; }
 button.play { background:var(--panel); color:var(--fg); border:1px solid var(--line);
   padding:.25rem .55rem; font-weight:400; }
 button.play:hover:not(:disabled) { border-color:var(--accent); }
+button.play.playing { border-color:var(--accent); color:var(--accent); }
 input[type=number] { background:var(--panel); color:var(--fg); border:1px solid var(--line);
   border-radius:6px; padding:.3rem .5rem; font:inherit; width:4.5rem; }
 select { background:var(--panel); color:var(--fg); border:1px solid var(--line);
@@ -36,8 +37,8 @@ select { background:var(--panel); color:var(--fg); border:1px solid var(--line);
 
 .row { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin:1rem 0; }
 .files { list-style:none; margin:1rem 0; padding:0; }
-.files li { display:grid; grid-template-columns:1fr 6rem 9rem; gap:.75rem;
-  padding:.4rem .6rem; border-bottom:1px solid var(--line); font-size:.87rem; }
+.files li { display:grid; grid-template-columns:2.2rem 1fr 6rem 9rem; gap:.75rem;
+  align-items:center; padding:.4rem .6rem; border-bottom:1px solid var(--line); font-size:.87rem; }
 .files .sz { color:var(--dim); text-align:right; }
 .files .st { text-align:right; color:var(--dim); }
 .files .st.done { color:var(--ok); }
@@ -69,6 +70,7 @@ fieldset.features em { display:block; color:var(--dim); font-style:normal; font-
 #music tr.ep.empty td { color:var(--dim); }
 #music tr.seg td { color:var(--dim); font-size:.82rem; padding-top:.15rem; padding-bottom:.15rem; }
 #music tr.seg td:nth-child(2) { padding-left:2.1rem; }
+#music tr.seg button.play { padding:.05rem .42rem; font-size:.75rem; vertical-align:middle; }
 #music .pick { width:2rem; }
 #music .dim { opacity:.65; }
 button.twisty { background:none; border:0; color:var(--dim); cursor:pointer; padding:0 .45rem 0 0;
