@@ -8,17 +8,34 @@
     ".": "./src/index.mjs",
     "./mp4": "./src/mp4.mjs",
     "./container": "./src/container.mjs",
-    "./webcodecs": "./src/webcodecs.mjs"
+    "./webcodecs": "./src/webcodecs.mjs",
+    "./cut": "./src/cut.mjs",
+    "./mux": "./src/mux.mjs"
   },
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=18" },
-  "scripts": {
-    "test": "node test/demux.mjs && node test/decode.mjs",
-    "test:demux": "node test/demux.mjs --all",
-    "test:decode": "node test/decode.mjs"
+  "engines": {
+    "node": ">=18"
   },
-  "keywords": ["webcodecs", "mp4", "demuxer", "iso-bmff", "aac", "audio", "browser", "decoder"],
+  "scripts": {
+    "test": "node test/demux.mjs && node test/decode.mjs && node --max-old-space-size=4096 test/cut.mjs",
+    "test:demux": "node test/demux.mjs --all",
+    "test:decode": "node test/decode.mjs",
+    "test:cut": "node test/cut.mjs"
+  },
+  "keywords": [
+    "webcodecs",
+    "mp4",
+    "demuxer",
+    "iso-bmff",
+    "aac",
+    "audio",
+    "browser",
+    "decoder"
+  ],
   "license": "MIT",
   "dependencies": {}
 }

@@ -320,8 +320,27 @@ function parseTrack(buf, trak) {
     }
   }
 
+  // Edit list: the first entry's media_time is the AAC priming trim. Without
+  // it a re-muxed file decodes offset by the encoder delay (measured: 2048
+  // media units, enough to make otherwise-identical audio differ completely).
+  let editMediaTime = 0;
+  const edts = findBox(buf, trak.payload, trak.end, 'edts');
+  if (edts) {
+    const elst = findBox(buf, edts.payload, edts.end, 'elst');
+    if (elst && u32(buf, elst.payload + 4) >= 1) {
+      const version = buf[elst.payload];
+      editMediaTime = version === 1
+        ? (u32(buf, elst.payload + 16) | 0)
+        : (u32(buf, elst.payload + 12) | 0);
+    }
+  }
+
   const samples = audio ? buildSamples(buf, stbl, timescale || 1) : [];
-  return { handler, timescale, duration, audio, samples };
+  // Keep the SampleDescription verbatim: re-muxing can then reuse the decoder
+  // configuration byte-for-byte instead of re-serialising esds and risking a
+  // subtly different config.
+  const stsdRaw = stsd ? buf.slice(stsd.start, stsd.end) : null;
+  return { handler, timescale, duration, audio, samples, stsdRaw, editMediaTime };
 }
 
 /**
@@ -368,6 +387,10 @@ export function demuxMp4(buf) {
       channels: chosen.audio?.channels ?? 0,
       description: chosen.audio?.description ?? null,
       sampleCount: chosen.samples.length,
+      // enough to re-mux this track without touching the codec config
+      timescale: chosen.timescale,
+      stsdRaw: chosen.stsdRaw,
+      editMediaTime: chosen.editMediaTime ?? 0,
     },
     samples: chosen.samples,
     warnings,

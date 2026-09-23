@@ -51,6 +51,60 @@ Output is at the **source's native rate** unless you request otherwise via
 resample; the WebCodecs path cannot, and `music-analysis` resamples internally
 anyway).
 
+## Lossless cutting
+
+Because the demuxer already parses the full sample table, removing music is just
+*selecting samples by timestamp and re-muxing* — no decode, no re-encode, no
+generation loss.
+
+```js
+import { cutAudio, rangesFromSegments } from 'audio-decode';
+
+const { bytes, info } = cutAudio(sourceBytes, rangesFromSegments(segments), {
+  mode: 'remove',        // 'remove' strips the ranges; 'keep' extracts only them
+});
+info.removedSeconds;     // 12.011  (asked for 12.000)
+info.snapSeconds;        // 0.011   (frame-boundary snap)
+info.outputSeconds;      // 1346.288
+```
+
+`bytes` is a new MP4 with the same codec, rate and channels. Granularity is one
+AAC frame (1024 samples ≈ 21 ms at 48 kHz), and the real removed span is reported
+so the snap is visible rather than silent.
+
+The muxer is ~150 lines, and one decision keeps it that small: the source's
+`stsd` (SampleDescription) is copied **verbatim**, so the decoder configuration
+is preserved byte-for-byte rather than re-serialising `esds`.
+
+### The edit list is not optional
+
+AAC carries encoder priming, and the source MP4 declares how much to trim in an
+`edts`/`elst` box (`media_time = 2048` on the reference corpus). Omitting it from
+a re-muxed file means the decoder no longer trims, so the output decodes shifted
+by the priming delay — measured with the original otherwise-identical audio
+differing by up to **0.86** (near full scale). `cutAudio` re-emits it, and drops
+it when the cut removed the original first sample (the new head carries no
+encoder delay).
+
+### Verified losslessness
+
+`test/cut.mjs` does not stop at durations. It decodes the original and the cut
+file and compares samples directly, at the **native** rate:
+
+```
+audio BEFORE the cut is bit-identical (max diff 0, 14,394,688 frames)
+audio AFTER  the cut is bit-identical (max diff 0, 50,215,488 frames)
+  windows at +5s, +30s, +120s, +600s past the splice: max diff 0
+```
+
+Only a ~0.1 s guard either side of the splice is excluded, covering the AAC MDCT
+overlap at the seam.
+
+Comparing at a *resampled* rate instead produces differences around 0.2 that are
+entirely an artefact of ffmpeg's resampler filter differing across the splice —
+the codec-domain content is untouched. Worth knowing before trusting that
+measurement.
+
 ## What the demuxer parses
 
 `moov` → `trak` → `mdia` → `minfb` → `stbl`, and from there `stsd` (codec +
@@ -85,6 +139,10 @@ Both skip cleanly when the corpus or ffmpeg is absent.
 
 ## Limitations
 
+- **Lossless cutting is MP4-only** and refuses fragmented input; the ffmpeg
+  fallback could re-encode instead, at a quality cost.
+- **No `elst` precision beyond the initial trim.** Cutting mid-file keeps the
+  priming trim; cutting the head drops it. Sub-frame edit lists are not modelled.
 - **Non-fragmented MP4 only** for the built-in path; everything else falls back.
 - **The whole file is read into memory** to demux, because `moov` can sit at
   either end. Fine for audio (tens of MB); a large video file would want

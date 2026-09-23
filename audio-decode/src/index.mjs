@@ -24,6 +24,8 @@ export { sniffContainer, MP4_EXTENSIONS } from './container.mjs';
 export { demuxMp4, parseAudioSpecificConfig } from './mp4.mjs';
 export { decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
 export { readSource } from './source.mjs';
+export { muxAudioMp4 } from './mux.mjs';
+export { cutAudio, selectSamples, normalizeRanges, rangesFromSegments } from './cut.mjs';
 
 const isNode = () => typeof process !== 'undefined' && !!process.versions?.node;
 
