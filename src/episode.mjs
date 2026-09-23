@@ -39,7 +39,7 @@ const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
  * so this is approximate by design; the property that matters is that the meter
  * keeps moving at a roughly even rate.
  */
-const STAGE_SHARE = { decode: 0.36, chroma: 0.21, features: 0.325, fingerprints: 0.105 };
+const STAGE_SHARE = { decode: 0.40, chroma: 0.178, features: 0.299, fingerprints: 0.123 };
 
 /** Mean frame level, in dB, over [from, to) seconds. Feature 0 is logRms. */
 const LOG_RMS = 0;

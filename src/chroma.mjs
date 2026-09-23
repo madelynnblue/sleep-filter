@@ -23,7 +23,7 @@
  * Pure JS, browser-portable: no Node APIs, no dependencies.
  */
 
-import { makeFFT, fftInPlace } from './fft.mjs';
+import { makeFFT, realSpectrum } from './fft.mjs';
 
 /**
  * @returns {{C: Float32Array, nFrames: number, frameRate: number, duration: number}}
@@ -58,7 +58,9 @@ export function computeChroma(samples, opts = {}) {
   for (let i = 0; i < nfft; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (nfft - 1));
 
   const re = new Float32Array(nfft);
-  const im = new Float32Array(nfft);
+  const mag = new Float32Array(nBins);
+  const power = new Float32Array(nBins);
+  const scratch = new Float32Array(nfft);
   const C = new Float32Array(nFrames * 12);
   const norms = new Float32Array(nFrames);
 
@@ -69,16 +71,15 @@ export function computeChroma(samples, opts = {}) {
 
   for (let t = 0; t < nFrames; t++) {
     const off = t * hop;
-    for (let i = 0; i < nfft; i++) { re[i] = samples[off + i] * win[i]; im[i] = 0; }
-    fftInPlace(re, im, T);
+    for (let i = 0; i < nfft; i++) re[i] = samples[off + i] * win[i];
+    realSpectrum(re, T, mag, power, scratch);
     const base = t * 12;
     let e = 0;
     for (let k = 0; k < nBins; k++) {
       const p = pc[k];
       if (p < 0) continue;
-      const m = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
-      C[base + p] += m;
-      e += m;
+      C[base + p] += mag[k];
+      e += mag[k];
     }
     norms[t] = e;
     if (onProgress && t % tickEvery === 0) onProgress(t / nFrames);

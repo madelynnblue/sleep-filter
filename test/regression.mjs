@@ -136,7 +136,11 @@ console.log('equivalence vs reference spike implementation (same input):');
 
   const a = computeChroma(x, { sampleRate: RATE });
   const b = refChroma(x, { sampleRate: RATE });
-  ok('computeChroma identical', close(a.C, b.C).ok, close(a.C, b.C).detail);
+  // Not bit-identical any more: the shared FFT now exploits that its input is
+  // real, which halves the transform but reorders the float arithmetic. The
+  // spike is still the reference, so anything above epsilon is a real change.
+  const cc = close(a.C, b.C, 1e-5);
+  ok('computeChroma equivalent', cc.ok, cc.detail);
 
   const fa = computeFeatures(x, { sampleRate: RATE });
   const fb = refFeatures(x, { sampleRate: RATE });

@@ -1,5 +1,5 @@
-import { makeFFT, fftInPlace } from './fft.mjs';
-export { makeFFT, fftInPlace };
+import { makeFFT, realSpectrum } from './fft.mjs';
+export { makeFFT, realSpectrum };
 
 /**
  * Multi-asset discovery by landmark-fingerprint offset consensus.
@@ -67,19 +67,23 @@ export function fingerprint(samples, opts = {}) {
   for (let i = 0; i < nfft; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (nfft - 1));
 
   const re = new Float32Array(nfft);
-  const im = new Float32Array(nfft);
+  const magAll = new Float32Array(T.half + 1);
+  const powerAll = new Float32Array(T.half + 1);
+  const scratch = new Float32Array(nfft);
 
   const frameMag = (t) => {
     const off = t * hop;
     let energy = 0;
     for (let i = 0; i < nfft; i++) {
       const v = samples[off + i] * win[i];
-      re[i] = v; im[i] = 0; energy += v * v;
+      re[i] = v; energy += v * v;
     }
     if (20 * Math.log10(Math.sqrt(energy / nfft) + 1e-12) < silenceDb) return null;
-    fftInPlace(re, im, T);
+    realSpectrum(re, T, magAll, powerAll, scratch);
+    // the ring keeps three frames alive at once, so this one has to be its own
+    // copy rather than a view of the shared scratch
     const m = new Float32Array(maxBin + 1);
-    for (let k = 0; k <= maxBin; k++) m[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+    m.set(magAll.subarray(0, maxBin + 1));
     return m;
   };
 

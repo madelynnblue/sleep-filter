@@ -1,4 +1,4 @@
-import { makeFFT, fftInPlace } from './fft.mjs';
+import { makeFFT, realSpectrum } from './fft.mjs';
 import { biquadBandpass, applyBiquad, movingAvgAbs, movAvgSq } from './dsp.mjs';
 
 /**
@@ -85,7 +85,9 @@ export function computeFeatures(samples, opts = {}) {
   // --- one STFT pass for the spectral features ---
   const win = new Float32Array(nfft);
   for (let i = 0; i < nfft; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (nfft - 1));
-  const re = new Float32Array(nfft), im = new Float32Array(nfft);
+  const re = new Float32Array(nfft);
+  const power = new Float32Array(half + 1);
+  const scratch = new Float32Array(nfft);
   const FT = makeFFT(nfft);
   const lowBin = Math.round((fLow * nfft) / sampleRate);
 
@@ -106,19 +108,18 @@ export function computeFeatures(samples, opts = {}) {
     let energy = 0;
     for (let i = 0; i < nfft; i++) {
       const v = samples[off + i] * win[i];
-      re[i] = v; im[i] = 0; energy += v * v;
+      re[i] = v; energy += v * v;
     }
     logRms[t] = 20 * Math.log10(Math.sqrt(energy / nfft) + 1e-12);
 
-    // FFT via the chroma module's shared implementation
-    fftInPlace(re, im, FT);
-
+    // one real-input transform, which writes both the magnitudes flux needs and
+    // the powers the band sums need
     let low = 0, tot = 0, logSum = 0;
     const mag = magBuf[t & 1];
     const prevMag = t > 0 ? magBuf[(t - 1) & 1] : null;
+    realSpectrum(re, FT, mag, power, scratch);
     for (let k = 0; k <= half; k++) {
-      const p = re[k] * re[k] + im[k] * im[k];
-      mag[k] = Math.sqrt(p);
+      const p = power[k];
       tot += p;
       if (k <= lowBin) low += p;
       logSum += Math.log(p + 1e-12);
