@@ -219,7 +219,8 @@ function chooseReferences(maps, episodes, k) {
 
 /** Run the consensus test with a given reference and aggregate into assets. */
 function extractForReference(episodes, maps, ref, cfg) {
-  const { minVotes, refineFrames, minDensity, minSupport, maxPeaksPerPair, absentVoteFrac } = cfg;
+  const { minVotes, refineFrames, minDensity, minSupport, maxPeaksPerPair, absentVoteFrac,
+          maxOccurrenceSeconds } = cfg;
   const N = episodes.length;
   const refEp = episodes[ref];
   const peaks = [];
@@ -339,7 +340,16 @@ function extractForReference(episodes, maps, ref, cfg) {
     const vs = all.map((e) => e.votes).sort((x, y) => x - y);
     const medianVotes = vs[vs.length >> 1];
     const cutoff = Math.max(2, absentVoteFrac * medianVotes);
-    for (const e of all) e.present = !!e.isReference || e.votes >= cutoff;
+    // An occurrence whose matched extent is far longer than a clip was not
+    // located: the votes smeared across the episode rather than clustering on
+    // one asset. Marking it absent keeps it out of the asset's statistics AND
+    // out of the cut. That asymmetry is the point — an episode wrongly marked
+    // present loses minutes of dialogue to the cutter, while one wrongly marked
+    // absent merely keeps its music.
+    for (const e of all) {
+      e.present = (!!e.isReference || e.votes >= cutoff) &&
+                  (e.end - e.start) <= maxOccurrenceSeconds;
+    }
 
     const present = all.filter((e) => e.present);
     const absent = all.filter((e) => !e.present);
@@ -409,6 +419,12 @@ export function discover(episodes, opts = {}) {
     // An episode is "absent" if its best evidence is weaker than this fraction
     // of the median. Resilience to a few episodes missing the asset entirely.
     absentVoteFrac = 0.25,
+    // Longest a single occurrence can plausibly be. The landmark votes for one
+    // occurrence normally cluster tightly — on this corpus every real theme
+    // occurrence measures 11.2s — but when a small corpus lets generic content
+    // clear the adaptive peak threshold, the votes smear instead and the
+    // densest-85% window stretches to minutes.
+    maxOccurrenceSeconds = 90,
     maxPeaksPerPair = 5,  // strongest bins considered per episode pair
     referenceTrials = 4,  // candidate references tried; best run wins
     referenceIndex = null,
@@ -430,7 +446,8 @@ export function discover(episodes, opts = {}) {
   });
 
   const minSupport = Math.max(2, minSupportCount);
-  const cfg = { minVotes, refineFrames, minDensity, minSupport, maxPeaksPerPair, absentVoteFrac };
+  const cfg = { minVotes, refineFrames, minDensity, minSupport, maxPeaksPerPair, absentVoteFrac,
+                maxOccurrenceSeconds };
 
   const refList = referenceIndex !== null
     ? [referenceIndex]

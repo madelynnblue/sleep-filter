@@ -49,3 +49,9 @@ and nothing is uploaded.
   2 episodes, so its 8 dB figure is provisional. It removes 5 of the 6 false
   positives with no loss of confirmed music; the survivor is a loud 4.9s segment
   that only a duration floor would catch.
+- **Discovery on a handful of episodes.** The theme stage is validated on 19
+  episodes; run over five it is materially weaker. With too few episodes the
+  adaptive peak threshold cannot reject generic content, and the landmark votes
+  smear instead of clustering — a "clip" can then span minutes. The
+  `maxOccurrenceSeconds` guard stops those from being cut, but the asset list is
+  still worth reviewing closely on a small run.

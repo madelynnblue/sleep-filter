@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { homedir } from 'node:os';
-import { EpisodeAnalyzer, Library } from '../src/index.mjs';
+import { EpisodeAnalyzer, Library, discover } from '../src/index.mjs';
 // Exercise the REAL package boundary rather than shelling out to ffmpeg here:
 // audio-decode produces the chunks a browser's WebCodecs path would produce.
 import { openAudioFile } from '../audio-decode/src/index.mjs';
@@ -105,6 +105,26 @@ const weird = refined.episodes.find((e) => e.id === 'S02E03');
 ok('atypical episode (S02E03) is absent or low-confidence, not silently placed',
    !weird || weird.present === false || (weird.sim ?? 0) < 0.9,
    weird ? `present=${weird.present} sim=${weird.sim}` : 'missing');
+
+// No occurrence may be implausibly long. The cutter removes [start, end]
+// wholesale, so a smeared occurrence does not merely look wrong — it deletes
+// minutes of dialogue along with the music. These five episodes reproduce the
+// condition (few episodes, so the adaptive peak threshold cannot reject generic
+// content and the landmark votes smear instead of clustering). Re-running
+// discovery over them costs no extra decode.
+{
+  const SMEARS = ['S01E04', 'S01E05', 'S01E06', 'S01E07', 'S02E01'];
+  const subset = lib._fingerprintList().filter((e) => SMEARS.includes(e.id));
+  const loose = discover(subset, { maxOccurrenceSeconds: Infinity });
+  const guarded = discover(subset, {});
+
+  const longest = (d) => Math.max(0, ...d.candidates.flatMap((c) =>
+    c.episodes.filter((e) => e.present !== false && e.end != null).map((e) => e.end - e.start)));
+
+  ok(`these episodes smear with the guard off (longest ${longest(loose).toFixed(1)}s)`,
+     longest(loose) > 120);
+  ok(`the guard removes it (longest ${longest(guarded).toFixed(1)}s)`, longest(guarded) <= 90);
+}
 
 const segOut = lib.segment(refined);
 const withSegs = segOut.filter((r) => r.segments.length > 0).length;
