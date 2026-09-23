@@ -33,9 +33,13 @@ const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, 
 const hasWebCodecs = typeof globalThis.AudioDecoder === 'function';
 const hasFS = typeof window.showDirectoryPicker === 'function';
 
-$('capability').textContent = hasWebCodecs
-  ? 'WebCodecs available — MP4/M4A decode without a fallback.'
-  : 'WebCodecs is NOT available here, so decoding will fail. Try Chrome, Edge or Safari 16.4+.';
+// Only speak up when something is actually wrong. If WebCodecs is missing,
+// decoding cannot work at all and the user needs to know why.
+if (!hasWebCodecs) {
+  $('capability').hidden = false;
+  $('capability').textContent =
+    'WebCodecs is not available here, so decoding will fail. Try Chrome, Edge or Safari 16.4+.';
+}
 
 /* --------------------------------------------------------- file input -- */
 
