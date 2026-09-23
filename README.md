@@ -114,7 +114,8 @@ different thresholds, or re-seeding, essentially free.
 ## Browser notes
 
 - **Pure ESM, zero dependencies, no Node built-ins, no DOM.** Runs in a page, a
-  worker, or Node identically.
+  worker, or Node identically — and has been driven end to end from a browser via
+  `app/`, including WebCodecs decode and the module worker.
 - Run phase 1 in a **Web Worker** so the UI never blocks; the API is
   worker-agnostic.
 - **Transfer, don't copy** — `postMessage(chunk, [chunk.data.buffer])`.

@@ -23,19 +23,29 @@ Flow: drop episode files → **Analyse** (phase 1 in a worker pool, up to 4 at
 once) → pick an asset → **Find all music and export**. Output goes to a folder
 you choose (`showDirectoryPicker`, Chromium-only) or to individual downloads.
 
-### What is verified, and what is not
+### Verification status
 
-Verified here, without a browser:
+**Verified end to end in a real browser:** the import map and full module graph
+load, WebCodecs decodes MP4/AAC, the phase-1 module worker runs and transfers
+feature buffers back, phase 2 discovers and refines, segmentation runs, and the
+cut exports output files.
 
-- the whole module graph resolves over HTTP (every import 200s)
-- `main.js` references no DOM id that `index.html` lacks
-- the orchestration the page calls is the same code the CLI exercise below runs
+That closes the original loop — the whole chain runs client-side with no backend,
+and nothing is uploaded.
 
-**Not verified:** anything that requires executing in a page — WebCodecs decode,
-worker transferables, the directory picker, memory behaviour. Those have never
-run. The page is written against the documented APIs of the packages it uses,
-and the pieces it composes are individually tested, but you would be the first
-to execute it.
+**Not yet established:**
+
+- **Cross-browser.** Exercised in one browser only. Safari 16.4+ and Firefox 130+
+  should work (WebCodecs), but `showDirectoryPicker` is Chromium-only; elsewhere
+  the page falls back to individual downloads.
+- **Large batches.** Tried with a few files. A full season is 19 decodes with no
+  caching, so re-running re-decodes everything — IndexedDB is the obvious fix and
+  the results are already structured-cloneable for it.
+- **Non-MP4 containers in a page.** The ffmpeg fallback is Node-only, so a
+  container the built-in demuxer refuses has no path here.
+- **Output equivalence with the CLI.** Both go through the same orchestration and
+  the same cutter, so they should agree sample-for-sample, but this has not been
+  compared directly.
 
 ## CLI
 
