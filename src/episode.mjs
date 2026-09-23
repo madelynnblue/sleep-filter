@@ -20,9 +20,44 @@
 import { MonoResampler, DEFAULT_SAMPLE_RATE, toMonoAt } from './audio.mjs';
 import { computeChroma } from './chroma.mjs';
 import { fingerprint } from './discovery.mjs';
-import { computeFeatures, calibrate, scoreFrames, segment } from './features.mjs';
+import { computeFeatures, calibrate, scoreFrames, segment, NFEAT } from './features.mjs';
 
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
+
+/** Mean frame level, in dB, over [from, to) seconds. Feature 0 is logRms. */
+const LOG_RMS = 0;
+function meanLevel(F, from, to) {
+  const t0 = Math.max(0, Math.round(from * F.frameRate));
+  const t1 = Math.min(F.nFrames, Math.round(to * F.frameRate));
+  if (t1 <= t0) return NaN;
+  let acc = 0;
+  for (let t = t0; t < t1; t++) acc += F.feats[t * NFEAT + LOG_RMS];
+  return acc / (t1 - t0);
+}
+
+/**
+ * Drop segments far quieter than the music exemplars.
+ *
+ * Foreground music is mixed at roughly the level of the music already identified
+ * in that episode. Room tone, a low drone, or a scene sitting under a music bed
+ * can look just as "musical" to the discriminant — that failure mode is timbre,
+ * not loudness — but they sit well below the exemplars, and they are exactly the
+ * audio that should be kept.
+ *
+ * The reference is the exemplar regions themselves, so the gate follows each
+ * episode's own mix instead of an absolute dB figure that a differently mastered
+ * file would break.
+ *
+ * Opt-in: 0 disables it. The same function refines theme boundaries, where this
+ * gate has not been validated, so callers opt in explicitly.
+ */
+function gateByLevel(segments, F, positiveRanges, slackDb) {
+  if (!(slackDb > 0)) return segments;
+  const levels = positiveRanges.map(([a, b]) => meanLevel(F, a, b)).filter(Number.isFinite);
+  if (!levels.length) return segments;
+  const ref = levels.reduce((x, y) => x + y, 0) / levels.length;
+  return segments.filter((s) => meanLevel(F, s.start, s.end) >= ref - slackDb);
+}
 
 class SampleBuffer {
   constructor() { this.buf = new Float32Array(CHUNK_GROW); this.length = 0; }
@@ -142,9 +177,10 @@ export function segmentEpisode(episode, positiveRanges, opts = {}) {
     throw new Error('calibration failed — need at least ~10 positive frames and ~50 negatives');
   }
   const scores = scoreFrames(F.feats, F.nFrames, cal);
+  const segments = segment(scores, F.frameRate, { mid: cal.mid, ...opts });
   return {
     calibration: cal,
-    segments: segment(scores, F.frameRate, { mid: cal.mid, ...opts }),
+    segments: gateByLevel(segments, F, positiveRanges, opts.levelSlack ?? 0),
   };
 }
 

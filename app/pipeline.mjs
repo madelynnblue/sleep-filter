@@ -82,7 +82,11 @@ export function musicRangesFor(library, assets, opts = {}) {
     const ep = library.episodes.get(id);
     if (!ep?.features) continue;
     try {
-      const { segments } = segmentEpisode(ep, ranges, opts.segment ?? {});
+      // levelSlack: proposed music must be within 8 dB of the level of the music
+      // exemplars. Music the user wants gone is foreground music; the false
+      // positives are quiet passages that merely resemble it in timbre, which is
+      // the audio that should stay.
+      const { segments } = segmentEpisode(ep, ranges, { levelSlack: 8, ...(opts.segment ?? {}) });
       const taken = opts.exclude?.get(id);
       const kept = taken?.length ? segments.filter((s) => !overlapsAny(s, taken)) : segments;
       out.push({ id, segments: kept, ranges: rangesFromSegments(kept) });

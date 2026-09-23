@@ -45,3 +45,7 @@ and nothing is uploaded.
 - **Output equivalence with the CLI.** Both go through the same orchestration and
   the same cutter, so they should agree sample-for-sample, but this has not been
   compared directly.
+- **The general-music level gate.** Tuned against 11 hand-labelled segments from
+  2 episodes, so its 8 dB figure is provisional. It removes 5 of the 6 false
+  positives with no loss of confirmed music; the survivor is a loud 4.9s segment
+  that only a duration floor would catch.

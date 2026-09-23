@@ -19,6 +19,7 @@ import {
   EpisodeAnalyzer, Library, computeChroma, computeFeatures, fingerprint,
   MonoResampler, segmentEpisode, preferredInput,
 } from '../src/index.mjs';
+import { NFEAT } from '../src/features.mjs';
 
 // reference implementation (the original spike, unchanged)
 import { computeChroma as refChroma } from '../spike/chroma.mjs';
@@ -298,6 +299,60 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   // (constant RMS, no scene structure), which produces spurious consensus that
   // does not occur on real material. Positional accuracy is covered by
   // test/integration.mjs against real episodes, which is the meaningful check.
+}
+
+/* ------------------------------------------- level gate (synthetic) -- */
+//
+// The general-music stage's false positives are quiet: room tone, or a scene
+// under a music bed, scores just as "musical" as real music while sitting far
+// below it. This builds both cases in feature space — identical timbre, one loud
+// and one quiet — so the gate can be checked without audio.
+//
+// minPeak is neutralised because the score is only defined up to an affine
+// transform: on real audio a true cue peaks around 2, but hand-built features
+// land wherever the weights put them, and that floor is not what is under test.
+{
+  const FPS = 8000 / 512;          // the real analysis frame rate
+  const SECONDS = 60;
+  const nFrames = Math.round(SECONDS * FPS);
+  let seed = 99;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+  // Background mirrors real material: its LEVEL varies hugely frame to frame
+  // (silence through speech) while its timbre stays noise-like. That spread is
+  // what stops the discriminant keying on level — it is why logRms earns a tiny
+  // weight on real episodes, and why a separate level gate is needed at all.
+  const background = () => [
+    -52 + 26 * rnd(), 0.14 + 0.10 * rnd(), 0.26 + 0.08 * rnd(),
+    0.29 + 0.03 * rnd(), 0.14 + 0.03 * rnd(), 0.70 + 0.06 * rnd(),
+  ];
+  const music = (level) => [
+    level, 0.62 + 0.05 * rnd(), 0.075 + 0.02 * rnd(),
+    0.24 + 0.01 * rnd(), 0.07 + 0.01 * rnd(), 0.85 + 0.04 * rnd(),
+  ];
+
+  const feats = new Float32Array(nFrames * NFEAT);
+  for (let t = 0; t < nFrames; t++) {
+    const sec = t / FPS;
+    const v = (sec >= 10 && sec < 22) ? music(-27)
+      : (sec >= 35 && sec < 50) ? music(-45)
+      : background();
+    for (let f = 0; f < NFEAT; f++) feats[t * NFEAT + f] = v[f];
+  }
+  const episode = { id: 'synthetic', features: { feats, nFrames, frameRate: FPS, duration: SECONDS } };
+  const exemplar = [[10, 22]];     // the loud region, as a detected theme would be
+
+  const gated = (slack) =>
+    segmentEpisode(episode, exemplar, { levelSlack: slack, minPeak: -1e9 }).segments;
+  const covers = (segs, at) => segs.some((s) => s.start <= at && at < s.end);
+
+  const open = gated(0);
+  ok(`level gate off: loud and identical-timbre quiet cue both segment (${open.length})`,
+     covers(open, 16) && covers(open, 42));
+
+  const closed = gated(8);
+  ok(`level gate on: the loud cue survives (${closed.length})`, covers(closed, 16));
+  ok('level gate on: the 18 dB quieter cue of identical timbre is dropped', !covers(closed, 42));
 }
 
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
