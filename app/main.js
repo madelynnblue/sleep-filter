@@ -453,7 +453,10 @@ function renderMatrix() {
       const present = e && e.present !== false && e.start != null;
       const off = state.selected.has(i) ? '' : ' off';
       if (!present) return `<td class="no${off}">·</td>`;
-      return `<td class="yes${off}" title="${fmtTime(e.start)}">✓</td>`;
+      // The range, not a tick: presence is what the range means, and where the
+      // cut lands is the thing that actually needs checking per episode.
+      return `<td class="yes${off}" title="${(e.end - e.start).toFixed(1)}s">` +
+             `${fmtTime(e.start)} – ${fmtTime(e.end)}</td>`;
     }).join('');
     return `<tr><th>${id}</th>${cells}</tr>`;
   }).join('');

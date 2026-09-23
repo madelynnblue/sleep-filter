@@ -90,7 +90,7 @@ th, td { text-align:left; padding:.4rem .5rem; border-bottom:1px solid var(--lin
 th { color:var(--dim); font-weight:600; }
 #matrix th:first-child { position:sticky; left:0; background:var(--bg); }
 #matrix td, #matrix th:not(:first-child) { text-align:center; }
-#matrix td.yes { color:var(--ok); }
+#matrix td.yes { color:var(--ok); font-variant-numeric:tabular-nums; }
 #matrix td.no { color:#3d434c; }
 #matrix .off { opacity:.3; }
 small { color:var(--dim); font-weight:400; }
