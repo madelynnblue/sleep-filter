@@ -1,32 +1,43 @@
 /**
  * Web page front end.
  *
- * Same orchestration as the CLI (app/pipeline.mjs) — the only difference is that
- * audio-decode picks the WebCodecs backend instead of ffmpeg, and phase 1 runs
- * across a worker pool so the UI stays responsive.
+ * Two independent features over the shared orchestration:
+ *   common themes   audio that repeats across episodes
+ *   general music   music inside a single episode
  *
- * Cutting happens on the main thread: the file is read again from disk (cheap
- * for these sizes) so workers need no cross-phase state.
+ * The flow is deliberately gated: analyse, then VERIFY (audition the detected
+ * clips), then export. Nothing touches disk before the export button — the page
+ * says so explicitly, because "when did this write files?" should never be a
+ * question.
  */
 
-import { discoverAssets, musicRanges, renderCut } from './pipeline.mjs';
+import {
+  discoverAssets, musicRangesFor, extractClipWav, exampleRegion, renderCut,
+} from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
-const state = { files: [], analyses: [], assets: [], library: null, outDir: null };
+const state = {
+  files: [],          // { id, file, status, progress, error }
+  analyses: [],
+  library: null,
+  assets: [],         // all discovered
+  shown: [],          // the top N actually displayed
+  selected: new Set(),// indices into `shown` that the user wants removed
+  previews: new Map(),// clip index -> { url, loading }
+  outDir: null,
+};
 
-/* -------------------------------------------------------- capability -- */
-
+const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 const hasWebCodecs = typeof globalThis.AudioDecoder === 'function';
 const hasFS = typeof window.showDirectoryPicker === 'function';
 
 $('capability').textContent = hasWebCodecs
-  ? 'WebCodecs available — MP4/M4A decode without any fallback.'
-  : 'WebCodecs is NOT available in this browser: only containers the built-in '
-    + 'demuxer handles can be decoded, and there is no fallback here. Try Chrome, Edge or Safari 16.4+.';
+  ? 'WebCodecs available — MP4/M4A decode without a fallback.'
+  : 'WebCodecs is NOT available here, so decoding will fail. Try Chrome, Edge or Safari 16.4+.';
 
 /* --------------------------------------------------------- file input -- */
 
-$('pick').onclick = () => $('files').click();
+$('drop').onclick = () => $('files').click();
 $('files').onchange = (e) => addFiles([...e.target.files]);
 
 const drop = $('drop');
@@ -41,30 +52,34 @@ function addFiles(files) {
     state.files.push({ id, file: f, status: 'queued', progress: 0 });
   }
   renderFiles();
-  $('analyze').disabled = state.files.length === 0;
+  updateAnalyzeButton();
 }
 
 function renderFiles() {
   $('filelist').innerHTML = state.files.map((f) => {
-    const label = f.status === 'done' ? 'done'
-      : f.status === 'running' ? `${(f.progress * 100).toFixed(0)}%`
+    const label = f.status === 'done' ? 'analysed'
+      : f.status === 'running' ? `${((f.progress ?? 0) * 100).toFixed(0)}%`
       : f.status === 'error' ? `error: ${f.error}`
       : 'queued';
-    return `<li><span class="id">${f.id}</span><span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
+    return `<li><span class="id">${f.id}</span>` +
+           `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
            `<span class="st ${f.status}">${label}</span></li>`;
   }).join('');
 }
 
+const pendingFiles = () => state.files.filter((f) => f.status === 'queued' || f.status === 'error');
+function updateAnalyzeButton() {
+  const n = pendingFiles().length;
+  $('analyze').disabled = n === 0;
+  $('analyze').textContent = n ? `Analyse ${n} file${n > 1 ? 's' : ''}` : 'Analyse';
+}
+
 /* ------------------------------------------------------- worker pool -- */
 
-/**
- * One worker per file, capped at hardwareConcurrency. Each worker analyses a
- * single file and is terminated — no shared state to get wrong.
- */
 async function analyzePool() {
-  const pending = state.files.filter((f) => f.status === 'queued' || f.status === 'error');
+  const pending = pendingFiles();
   const limit = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 4, pending.length));
-  // stale results from a previous run for the same ids would confuse discovery
+  // stale results for the same ids would corrupt discovery
   state.analyses = state.analyses.filter((a) => !pending.some((f) => f.id === a.id));
   let next = 0;
 
@@ -73,25 +88,12 @@ async function analyzePool() {
     renderFiles();
     return new Promise((resolve) => {
       const worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
-      const finish = (result) => {
-        worker.terminate();
-        renderFiles();
-        resolve(result);
-      };
+      const finish = (result) => { worker.terminate(); renderFiles(); resolve(result); };
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'progress') {
-          entry.progress = m.progress ?? 0;
-          renderFiles();
-        } else if (m.type === 'done') {
-          entry.status = 'done';
-          entry.progress = 1;
-          finish(m.analysis);
-        } else if (m.type === 'error') {
-          entry.status = 'error';
-          entry.error = m.message;
-          finish(null);
-        }
+        if (m.type === 'progress') { entry.progress = m.progress ?? 0; renderFiles(); }
+        else if (m.type === 'done') { entry.status = 'done'; entry.progress = 1; finish(m.analysis); }
+        else if (m.type === 'error') { entry.status = 'error'; entry.error = m.message; finish(null); }
       };
       worker.onerror = (err) => {
         entry.status = 'error';
@@ -110,6 +112,7 @@ async function analyzePool() {
     }
   }));
   state.analyses.push(...results);
+  return results.length;
 }
 
 /* ------------------------------------------------------------ analyse -- */
@@ -118,122 +121,257 @@ $('analyze').onclick = async () => {
   $('analyze').disabled = true;
   $('analyze').textContent = 'Analysing…';
   try {
-    await analyzePool();
-    if (!state.analyses.length) throw new Error('no episodes could be analysed');
-
-    const { library, assets } = discoverAssets(state.analyses, {});
-    state.library = library;
-    state.assets = assets;
-
-    if (!assets.length) {
-      $('step2').hidden = false;
-      $('assets').querySelector('tbody').innerHTML =
-        '<tr><td colspan="6">No recurring assets found. Detection needs audio that repeats across episodes.</td></tr>';
-      $('cut').disabled = true;
-      return;
-    }
-    renderAssets();
-    $('step2').hidden = false;
+    const n = await analyzePool();
+    if (!n) throw new Error('nothing could be analysed — see the file list');
+    await runDetection();
   } catch (err) {
     alert(`Analysis failed: ${err.message}`);
   } finally {
-    $('analyze').disabled = false;
-    $('analyze').textContent = 'Analyse';
+    updateAnalyzeButton();
   }
 };
 
-function renderAssets() {
-  const tb = $('assets').querySelector('tbody');
-  tb.innerHTML = state.assets.map((a, i) => {
-    const conf = a.meanSim ?? a.meanVotes ?? null;
-    const confTxt = typeof conf === 'number' ? conf.toFixed(3) : '—';
-    const weak = typeof a.meanSim === 'number' && a.meanSim < 0.9;
-    return `<tr>
-      <td><input type="radio" name="asset" value="${i}" ${i === 0 ? 'checked' : ''}></td>
-      <td>${a.kind}</td>
-      <td>${a.support}/${a.totalEpisodes ?? state.analyses.length}</td>
-      <td>${a.span.toFixed(1)}s</td>
-      <td>${fmtTime(a.meanStart)}</td>
-      <td class="${weak ? 'weak' : ''}">${confTxt}${weak ? ' ⚠' : ''}</td>
-    </tr>`;
-  }).join('');
-  const first = state.assets[0];
-  $('absentNote').textContent = first.absent?.length
-    ? `Not present in: ${first.absent.join(', ')}`
-    : '';
+async function runDetection() {
+  const wantThemes = $('featThemes').checked;
+  const topN = Math.max(1, Math.min(20, Number($('topN').value) || 5));
+
+  if (!wantThemes && !$('featMusic').checked) {
+    alert('Enable at least one of "Common themes" or "General music".');
+    return;
+  }
+
+  const { library, assets } = discoverAssets(state.analyses, wantThemes ? {} : { topN: 0 });
+  state.library = library;
+  state.assets = assets;
+  state.shown = wantThemes ? assets.slice(0, topN) : [];
+  state.selected = new Set(state.shown.map((_, i) => i));
+  state.previews.clear();
+
+  renderClips();
+  renderMatrix();
+  renderMusicNote();
+  $('verify').hidden = false;
+  $('done').hidden = true;
+  $('verify').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
+/* --------------------------------------------------------- clip list -- */
 
-/* ---------------------------------------------------------------- cut -- */
+function renderClips() {
+  const wantThemes = $('featThemes').checked;
+  document.querySelector('#verify h2').hidden = !wantThemes;
+  $('clips').hidden = !wantThemes;
+  document.querySelector('#verify h3').hidden = !wantThemes;
+  document.querySelector('.scroll').hidden = !wantThemes;
+  if (!wantThemes) return;
+
+  if (!state.shown.length) {
+    $('clips').innerHTML = '<li class="empty">No recurring audio found across these files.</li>';
+    return;
+  }
+
+  $('clips').innerHTML = state.shown.map((a, i) => {
+    const conf = typeof a.meanSim === 'number' ? a.meanSim : null;
+    const weak = conf !== null && conf < 0.9;
+    const region = exampleRegion(a);
+    const example = region ? `${region.id} @ ${fmtTime(region.start)}` : 'no example';
+    return `<li>
+      <input type="checkbox" class="pick" data-i="${i}" ${state.selected.has(i) ? 'checked' : ''}>
+      <button class="play" data-i="${i}" type="button" title="Play an example">▶</button>
+      <span class="kind">${a.kind}</span>
+      <span class="meta">
+        ${a.span.toFixed(1)}s &middot;
+        in ${a.support}/${a.totalEpisodes ?? state.analyses.length} files &middot;
+        ${conf !== null ? `confidence <span class="${weak ? 'weak' : ''}">${conf.toFixed(3)}</span>` : ''}
+        &middot; example: ${example}
+      </span>
+    </li>`;
+  }).join('');
+
+  $('clips').querySelectorAll('.pick').forEach((el) => {
+    el.onchange = () => {
+      const i = Number(el.dataset.i);
+      if (el.checked) state.selected.add(i); else state.selected.delete(i);
+      renderMatrix();
+      renderMusicNote();
+    };
+  });
+  $('clips').querySelectorAll('.play').forEach((el) => {
+    el.onclick = () => playClip(Number(el.dataset.i), el);
+  });
+}
+
+async function playClip(i, button) {
+  const cached = state.previews.get(i);
+  if (cached?.url) { new Audio(cached.url).play(); return; }
+  if (cached?.loading) return;
+
+  const asset = state.shown[i];
+  const region = exampleRegion(asset);
+  if (!region) { button.textContent = '—'; return; }
+
+  const entry = state.files.find((f) => f.id === region.id);
+  if (!entry) { button.textContent = '—'; return; }
+
+  state.previews.set(i, { loading: true });
+  const was = button.textContent;
+  button.textContent = '…';
+  button.disabled = true;
+  try {
+    const { blob } = await extractClipWav(entry.file, region.start, region.end, { decode: {} });
+    const url = URL.createObjectURL(blob);
+    state.previews.set(i, { url });
+    new Audio(url).play();
+  } catch (err) {
+    state.previews.delete(i);
+    button.textContent = '!';
+    button.title = `Could not extract the clip: ${err.message}`;
+    setTimeout(() => { button.textContent = was; }, 1500);
+  } finally {
+    button.disabled = false;
+    if (button.textContent === '…') button.textContent = '▶';
+  }
+}
+
+/* ----------------------------------------------------------- matrix -- */
+
+function renderMatrix() {
+  const files = state.analyses.map((a) => a.id);
+  const shown = state.shown;
+  if (!shown.length) { $('matrix').innerHTML = ''; return; }
+
+  const head = `<thead><tr><th>file</th>${
+    shown.map((a, i) => `<th class="${state.selected.has(i) ? '' : 'off'}">clip ${i + 1}<br><small>${a.span.toFixed(0)}s</small></th>`).join('')
+  }</tr></thead>`;
+
+  const body = files.map((id) => {
+    const cells = shown.map((a, i) => {
+      const e = a.episodes.find((x) => x.id === id);
+      const present = e && e.present !== false && e.start != null;
+      const off = state.selected.has(i) ? '' : ' off';
+      if (!present) return `<td class="no${off}">·</td>`;
+      return `<td class="yes${off}" title="${fmtTime(e.start)}">✓</td>`;
+    }).join('');
+    return `<tr><th>${id}</th>${cells}</tr>`;
+  }).join('');
+
+  $('matrix').innerHTML = head + `<tbody>${body}</tbody>`;
+}
+
+/* ------------------------------------------------------ general music -- */
+
+function renderMusicNote() {
+  const on = $('featMusic').checked;
+  const exemplars = [...state.selected].map((i) => state.shown[i]).filter(Boolean);
+  if (!on) { $('musicNote').textContent = 'General music removal is off.'; return; }
+  if (!exemplars.length) {
+    $('musicNote').innerHTML =
+      'General music needs a music example to calibrate on, and none is selected. ' +
+      'Tick at least one common theme above, or leave it off.';
+    return;
+  }
+  $('musicNote').textContent =
+    `Calibrated on ${exemplars.length} selected clip${exemplars.length > 1 ? 's' : ''}. ` +
+    'Music detected inside each episode will also be removed. ' +
+    'This stage is assistive — it runs close to its decision boundary, so review the output.';
+}
+
+$('featMusic').onchange = renderMusicNote;
+$('featThemes').onchange = () => { renderClips(); renderMatrix(); renderMusicNote(); };
+
+/* ---------------------------------------------------------- export -- */
 
 if (hasFS) {
-  $('dirBtn').hidden = false;
-  $('dirBtn').onclick = async () => {
-    try {
-      state.outDir = await window.showDirectoryPicker({ mode: 'readwrite' });
-      $('dirBtn').textContent = `Output: ${state.outDir.name}`;
-    } catch { /* user cancelled */ }
-  };
+  $('exportHint').textContent = 'You will pick an output folder.';
+} else {
+  $('exportHint').textContent = 'Files will download individually.';
 }
 
-$('cut').onclick = async () => {
-  const index = Number(document.querySelector('input[name=asset]:checked')?.value ?? 0);
-  const asset = state.assets[index];
-  if (!asset) return;
-  const mode = $('mode').value;
+$('export').onclick = async () => {
+  const wantThemes = $('featThemes').checked;
+  const wantMusic = $('featMusic').checked;
+  const clips = [...state.selected].map((i) => state.shown[i]).filter(Boolean);
 
-  $('cut').disabled = true;
-  $('cut').textContent = 'Working…';
-  $('step3').hidden = false;
+  $('export').disabled = true;
+  $('export').textContent = 'Working…';
 
   try {
-    const perEpisode = musicRanges(state.library, asset, { segment: {} });
+    // gather ranges per file
+    const perFile = new Map();
+    const add = (id, a, b) => {
+      if (!perFile.has(id)) perFile.set(id, []);
+      perFile.get(id).push([a, b]);
+    };
+    if (wantThemes) {
+      for (const a of clips) {
+        for (const e of a.episodes) {
+          if (e.present === false || e.start == null) continue;
+          add(e.id, e.start, e.end);
+        }
+      }
+    }
+    if (wantMusic && clips.length) {
+      for (const r of musicRangesFor(state.library, clips, {})) {
+        for (const [a, b] of r.ranges) add(r.id, a, b);
+      }
+    }
+
+    if (!perFile.size) {
+      $('summary').textContent = 'Nothing to remove — no clips selected and no general music to cut.';
+      $('done').hidden = false;
+      return;
+    }
+
+    let outDir = null;
+    if (hasFS) {
+      try { outDir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+      catch { $('export').disabled = false; $('export').textContent = 'Remove music and export…'; return; }
+    }
+
     const tb = $('results').querySelector('tbody');
     tb.innerHTML = '';
-    let totalRemoved = 0, written = 0;
+    let written = 0, totalRemoved = 0;
 
-    for (const { id, ranges, segments } of perEpisode) {
+    for (const [id, ranges] of perFile) {
       const entry = state.files.find((f) => f.id === id);
-      if (!entry) continue;
-      if (!ranges.length) {
-        tb.insertAdjacentHTML('beforeend', `<tr><td>${id}</td><td>0</td><td>—</td><td>—</td><td>no music detected</td></tr>`);
-        continue;
-      }
+      if (!entry || !ranges.length) continue;
       const bytes = new Uint8Array(await entry.file.arrayBuffer());
-      const { bytes: out, info } = renderCut(bytes, ranges, { mode });
+      const { bytes: out, info } = renderCut(bytes, ranges, { mode: 'remove' });
       totalRemoved += info.removedSeconds;
 
-      const suffix = mode === 'keep' ? ' (music only)' : ' (no music)';
-      const name = entry.file.name.replace(/\.[^.]+$/, '') + suffix + (entry.file.name.match(/\.[^.]+$/) ?? ['.m4a'])[0];
+      const name = entry.file.name.replace(/\.[^.]+$/, '') + ' (no music)' +
+        (entry.file.name.match(/\.[^.]+$/) ?? ['.m4a'])[0];
 
-      let how = '';
-      if (state.outDir) {
-        const handle = await state.outDir.getFileHandle(name, { create: true });
-        const w = await handle.createWritable();
+      let where;
+      if (outDir) {
+        const h = await outDir.getFileHandle(name, { create: true });
+        const w = await h.createWritable();
         await w.write(out);
         await w.close();
-        how = name;
+        where = name;
       } else {
         const url = URL.createObjectURL(new Blob([out], { type: 'audio/mp4' }));
         const a = document.createElement('a');
         a.href = url; a.download = name; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
-        how = `downloaded ${name}`;
+        where = 'downloaded';
       }
       written++;
       tb.insertAdjacentHTML('beforeend',
-        `<tr><td>${id}</td><td>${segments.length}</td><td>${info.removedSeconds.toFixed(0)}s</td>` +
-        `<td>${info.outputSeconds.toFixed(0)}s</td><td>${how}</td></tr>`);
+        `<tr><td>${id}</td><td>${ranges.length}</td>` +
+        `<td>${info.removedSeconds.toFixed(0)}s</td>` +
+        `<td>${info.outputSeconds.toFixed(0)}s</td><td>${where}</td></tr>`);
     }
 
     $('summary').textContent =
-      `${mode === 'keep' ? 'Extracted' : 'Removed'} ${totalRemoved.toFixed(0)}s across ${written} file(s). ` +
-      (state.outDir ? `Written to ${state.outDir.name}.` : 'Check your downloads.');
+      `${written} file(s) written, ${totalRemoved.toFixed(0)}s of music removed.`;
+    $('done').hidden = false;
+    $('done').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
-    $('summary').textContent = `Failed: ${err.message}`;
+    $('summary').textContent = `Export failed: ${err.message}`;
+    $('done').hidden = false;
   } finally {
-    $('cut').disabled = false;
-    $('cut').textContent = 'Find all music and export';
+    $('export').disabled = false;
+    $('export').textContent = 'Remove music and export…';
   }
 };

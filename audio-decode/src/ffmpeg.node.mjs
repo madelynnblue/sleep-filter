@@ -35,17 +35,26 @@ export function probe(file) {
 /**
  * Decode a file to interleaved f32 chunks.
  * @param {string} file  path on disk
- * @param {{sampleRate?: number, channels?: number, framesPerChunk?: number, signal?: AbortSignal}} [opts]
+ * @param {{sampleRate?, channels?, framesPerChunk?, fromSeconds?, toSeconds?, signal?}} [opts]
  */
 export async function* decodeWithFfmpeg(file, opts = {}) {
   const {
     sampleRate = 48000,
     channels = 2,
     framesPerChunk = 48000,     // ~1 s
+    fromSeconds,
+    toSeconds,
   } = opts;
 
-  const args = ['-v', 'error', '-i', file,
-    '-vn', '-f', 'f32le', '-ac', String(channels), '-ar', String(sampleRate), '-'];
+  const args = ['-v', 'error'];
+  // input seeking: fast, and accurate enough for auditioning a clip
+  if (fromSeconds !== undefined) args.push('-ss', String(fromSeconds));
+  args.push('-i', file);
+  if (toSeconds !== undefined) {
+    const start = fromSeconds ?? 0;
+    args.push('-t', String(Math.max(0, toSeconds - start)));
+  }
+  args.push('-vn', '-f', 'f32le', '-ac', String(channels), '-ar', String(sampleRate), '-');
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let stderr = '';

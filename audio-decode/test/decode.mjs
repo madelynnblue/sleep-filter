@@ -114,6 +114,62 @@ console.log('\ndecoded output vs an independent ffmpeg decode:');
   await it.return?.();
 }
 
+/* ----------------------------------------------------- time ranges -- */
+
+console.log('\ntime-range decoding (what the play buttons use):');
+{
+  const RATE = 16000, CH = 1, from = 300, to = 312;
+
+  // The browser path selects samples from the table; verify that directly,
+  // since it cannot be executed here.
+  const { readFileSync } = await import('node:fs');
+  const bytes = new Uint8Array(readFileSync(path));
+  const d = demuxMp4(bytes);
+  const ts = d.track.timescale;
+  const sel = d.samples.filter((s) => s.timestamp + s.duration > from * ts && s.timestamp < to * ts);
+  const selSec = sel.reduce((n, s) => n + s.duration, 0) / ts;
+  ok(`sample selection covers ~${to - from}s (${selSec.toFixed(3)}s, ${sel.length} samples)`,
+     Math.abs(selSec - (to - from)) <= (sel[0].duration / ts) + 1e-6);
+  ok('selection is far cheaper than a full decode',
+     sel.length < d.samples.length / 50, `${sel.length} of ${d.samples.length} samples`);
+
+  // The ffmpeg path is executable here: check it against a full decode.
+  const opened = await openAudioFile(path, {
+    backend: 'ffmpeg', sampleRate: RATE, channels: CH, framesPerChunk: RATE,
+    fromSeconds: from, toSeconds: to,
+  });
+  const parts = [];
+  for await (const c of opened.chunks()) parts.push(c.data);
+  const ranged = new Float32Array(parts.reduce((n, x) => n + x.length, 0));
+  { let o = 0; for (const x of parts) { ranged.set(x, o); o += x.length; } }
+
+  ok(`ranged decode is ~${to - from}s (${(ranged.length / RATE).toFixed(3)}s)`,
+     Math.abs(ranged.length / RATE - (to - from)) < 0.5);
+
+  // and that it matches the full decode at that offset (allowing for seek slop)
+  const full = spawnSync('ffmpeg', ['-v', 'error', '-i', path, '-vn',
+    '-f', 'f32le', '-ac', String(CH), '-ar', String(RATE), '-'], { maxBuffer: 1 << 30 });
+  const F = new Float32Array(full.stdout.buffer, full.stdout.byteOffset, full.stdout.length / 4);
+  const base = from * RATE;
+  let best = { d: Infinity, off: 0 };
+  for (let off = -RATE / 4; off <= RATE / 4; off += 1) {
+    let dd = 0;
+    for (let i = 0; i < RATE; i++) {
+      const a = F[base + off + i];
+      const b = ranged[i];
+      if (a === undefined || b === undefined) break;
+      dd = Math.max(dd, Math.abs(a - b));
+    }
+    if (dd < best.d) best = { d: dd, off };
+  }
+  // Not expected to be bit-exact, and that is fine for auditioning: seeking is
+  // not sample-exact and decoding mid-stream AAC has no prior overlap-add
+  // context, so the first frame differs slightly. The CUTTING path is the one
+  // that must be exact, and is verified separately in test/cut.mjs.
+  ok(`ranged decode closely matches the full decode (max diff ${best.d.toFixed(4)} at offset ${best.off})`,
+     best.d < 0.05, `best ${best.d}`);
+}
+
 /* --------------------------------------------------------- sniffer -- */
 
 console.log('\ncontainer sniffing:');

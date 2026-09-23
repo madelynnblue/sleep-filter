@@ -5,22 +5,17 @@
  * same code — the only difference is which decoder backend `audio-decode`
  * selects (WebCodecs in a page, ffmpeg in Node).
  *
- *   analyze      encoded file -> EpisodeAnalysis (features, chroma, fingerprints)
- *   discover     all analyses -> recurring assets (theme, stings)
- *   musicRanges  asset + analyses -> per-episode ranges to strip
- *   renderCut    source + ranges -> a new encoded file
+ * Two independent features sit on top of this:
+ *   common themes   audio that repeats across episodes (themes, stings)
+ *   general music   music within a single episode (interludes, songs, credits)
  */
 
-import { EpisodeAnalyzer, Library } from '../src/index.mjs';
+import { EpisodeAnalyzer, Library, segmentEpisode } from '../src/index.mjs';
 import { openAudioFile, cutAudio, rangesFromSegments } from '../audio-decode/src/index.mjs';
 
 /**
  * Decode and analyse one file. Phase 1 — heavy, and the unit of work for a
  * worker in the browser.
- *
- * @param {Blob|File|ArrayBuffer|Uint8Array|string} source
- * @param {string} id
- * @param {{onProgress?: (p: number) => void, decode?: object}} [opts]
  */
 export async function analyzeOne(source, id, opts = {}) {
   const analyzer = new EpisodeAnalyzer({ id });
@@ -38,41 +33,55 @@ export async function analyzeOne(source, id, opts = {}) {
 }
 
 /**
- * Analyse a list of sources sequentially, reporting progress.
- * @param {Array<{id: string, source: any}>} items
- */
-export async function analyzeAll(items, opts = {}) {
-  const out = [];
-  for (let i = 0; i < items.length; i++) {
-    opts.onFile?.(items[i].id, i, items.length);
-    out.push(await analyzeOne(items[i].source, items[i].id, opts));
-  }
-  return out;
-}
-
-/**
  * Recurring-asset discovery plus chroma refinement. Phase 2 — cheap, and needs
  * every episode at once.
+ * @param {number} [opts.topN] keep only the N most prevalent assets
  */
 export function discoverAssets(analyses, opts = {}) {
   const library = new Library();
   for (const a of analyses) library.add(a);
   const discovery = library.discover(opts.discover);
   const assets = library.refine(discovery.candidates, opts.refine);
-  return { library, discovery, assets };
+  return { library, discovery, assets, topN: opts.topN ?? assets.length };
+}
+
+/** The detected region of an asset's example episode — what a play button plays. */
+export function exampleRegion(asset) {
+  const ref = asset.episodes.find((e) => e.isReference)
+    ?? asset.episodes.find((e) => e.present !== false && e.start != null);
+  if (!ref || ref.start == null) return null;
+  return { id: ref.id, start: ref.start, end: ref.end };
 }
 
 /**
- * Per-episode music ranges for one asset, calibrated on that asset's own
- * regions. `mode` is passed through to the cutter.
+ * Per-episode music ranges, calibrated on the detected regions of one or more
+ * assets. Using several as positives gives the discriminant more to learn from
+ * than a single exemplar.
+ *
+ * @param {import('../src/library.mjs').Library} library
+ * @param {object[]} assets
  */
-export function musicRanges(library, asset, opts = {}) {
-  const perEpisode = library.segment(asset, opts.segment);
-  return perEpisode.map((r) => ({
-    id: r.id,
-    ranges: rangesFromSegments(r.segments),
-    segments: r.segments,
-  }));
+export function musicRangesFor(library, assets, opts = {}) {
+  const positives = new Map();
+  for (const a of assets) {
+    for (const e of a.episodes) {
+      if (e.present === false || e.start == null) continue;
+      if (!positives.has(e.id)) positives.set(e.id, []);
+      positives.get(e.id).push([e.start, e.end]);
+    }
+  }
+  const out = [];
+  for (const [id, ranges] of positives) {
+    const ep = library.episodes.get(id);
+    if (!ep?.features) continue;
+    try {
+      const { segments } = segmentEpisode(ep, ranges, opts.segment ?? {});
+      out.push({ id, segments, ranges: rangesFromSegments(segments) });
+    } catch (err) {
+      out.push({ id, segments: [], ranges: [], error: err.message });
+    }
+  }
+  return out;
 }
 
 /** Cut and re-mux one file. Returns encoded bytes. */
@@ -80,15 +89,80 @@ export function renderCut(sourceBytes, ranges, opts = {}) {
   return cutAudio(sourceBytes, ranges, opts);
 }
 
-/** Human-readable summary lines for an asset, shared by both front ends. */
-export function assetSummary(asset) {
+/* ------------------------------------------------------------- preview -- */
+
+const concat = (arrays) => {
+  const n = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Float32Array(n);
+  let o = 0;
+  for (const a of arrays) { out.set(a, o); o += a.length; }
+  return out;
+};
+
+/** Minimal RIFF/WAVE writer — 16-bit PCM, interleaved. */
+export function encodeWav(planes, sampleRate) {
+  const channels = planes.length;
+  const frames = Math.min(...planes.map((p) => p.length));
+  const bytes = frames * channels * 2;
+  const buf = new ArrayBuffer(44 + bytes);
+  const dv = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+
+  str(0, 'RIFF'); dv.setUint32(4, 36 + bytes, true); str(8, 'WAVE');
+  str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, channels, true); dv.setUint32(24, sampleRate, true);
+  dv.setUint32(28, sampleRate * channels * 2, true);
+  dv.setUint16(32, channels * 2, true); dv.setUint16(34, 16, true);
+  str(36, 'data'); dv.setUint32(40, bytes, true);
+
+  let o = 44;
+  for (let i = 0; i < frames; i++) {
+    for (let c = 0; c < channels; c++) {
+      const v = Math.max(-1, Math.min(1, planes[c][i]));
+      dv.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+      o += 2;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+/**
+ * Decode just a time range and return it as a WAV blob URL — what the play
+ * buttons use. Cheap because the demuxer hands the decoder only the frames
+ * covering that span (12s of decode, not 22 minutes).
+ */
+export async function extractClipWav(source, startSec, endSec, opts = {}) {
+  const { chunks } = await openAudioFile(source, {
+    ...(opts.decode ?? {}),
+    fromSeconds: startSec,
+    toSeconds: endSec,
+  });
+  const parts = [];
+  let sampleRate = 0, channels = 0;
+  for await (const c of chunks()) {
+    sampleRate = c.sampleRate;
+    channels = c.numberOfChannels;
+    if (!parts.length) for (let i = 0; i < channels; i++) parts.push([]);
+    if (c.format === 'f32-planar') {
+      for (let ch = 0; ch < channels; ch++) parts[ch].push(c.data[ch]);
+    } else {
+      for (let ch = 0; ch < channels; ch++) {
+        const n = c.numberOfFrames;
+        const arr = new Float32Array(n);
+        for (let i = 0; i < n; i++) arr[i] = c.data[i * channels + ch];
+        parts[ch].push(arr);
+      }
+    }
+  }
+  if (!sampleRate || !parts.length) throw new Error('nothing decoded in that range');
+  const planes = parts.map(concat);
+  const wav = encodeWav(planes, sampleRate);
   return {
-    kind: asset.kind,
-    support: `${asset.support}/${asset.totalEpisodes ?? '?'}`,
-    supportFraction: asset.supportFraction,
-    span: `${asset.span.toFixed(1)}s`,
-    meanStart: asset.meanStart,
-    confidence: asset.meanSim ?? null,
-    absent: asset.absent ?? [],
+    wav,
+    blob: new Blob([wav], { type: 'audio/wav' }),
+    sampleRate,
+    channels,
+    duration: Math.min(...planes.map((p) => p.length)) / sampleRate,
   };
 }
+

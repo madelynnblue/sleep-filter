@@ -5,72 +5,84 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Remove music from episodes</title>
 <link rel="stylesheet" href="./style.css">
-<script type="importmap">
-{
-  "imports": {
-    "music-analysis": "../src/index.mjs",
-    "audio-decode": "../audio-decode/src/index.mjs"
-  }
-}
-</script>
 </head>
 <body>
 
 <header>
   <h1>Remove music from episodes</h1>
   <p class="sub">
-    Finds music that plays on its own — themes, credits, interludes, songs — and cuts it out.
-    Music <em>under</em> dialogue is left in place by design.
-    Nothing is uploaded: decoding and analysis both run in this tab.
+    Finds music and cuts it out, losslessly. Nothing is uploaded, and
+    <strong>nothing is written to disk until you say so</strong>.
   </p>
 </header>
 
-<section id="step1">
+<!-- ------------------------------------------------------------ setup -- -->
+<section id="setup">
   <div id="drop" class="drop">
-    <p><strong>Drop episode files here</strong> or <button id="pick" type="button">choose files</button></p>
-    <p class="hint">MP4/M4A decode in-browser via WebCodecs. Other containers need a fallback backend.</p>
+    <p><strong>Drop episode files here</strong> — or click to choose</p>
+    <p class="hint">MP4/M4A decode in-browser via WebCodecs.</p>
     <input id="files" type="file" multiple accept="audio/*,video/*" hidden>
   </div>
+
   <ul id="filelist" class="files"></ul>
+
+  <fieldset class="features">
+    <legend>What to find</legend>
+    <label>
+      <input type="checkbox" id="featThemes" checked>
+      <span>
+        <strong>Common themes</strong>
+        <em>Audio that repeats across episodes — title themes and recurring stings.</em>
+      </span>
+    </label>
+    <label>
+      <input type="checkbox" id="featMusic" checked>
+      <span>
+        <strong>General music</strong>
+        <em>Music inside each episode — interludes, songs, credits.</em>
+      </span>
+    </label>
+  </fieldset>
+
+  <p class="row">
+    <label for="topN">Show the top</label>
+    <input type="number" id="topN" value="5" min="1" max="20" step="1">
+    <label for="topN">most common clips</label>
+  </p>
+
   <p id="capability" class="note"></p>
   <button id="analyze" type="button" disabled>Analyse</button>
 </section>
 
-<section id="step2" hidden>
-  <h2>Recurring assets found</h2>
+<!-- ----------------------------------------------------------- verify -- -->
+<section id="verify" hidden>
+  <div class="banner">Nothing has been written to disk yet.</div>
+
+  <h2>1. Common themes</h2>
   <p class="hint">
-    Assets are found by looking for audio that repeats across episodes, then measured
-    precisely. “Confidence” is chroma similarity inside the detected region — below
-    about 0.9 means the match is weak.
+    Play each clip to check it. Untick anything that isn't music you want gone —
+    the removal uses only what stays ticked.
   </p>
-  <table id="assets">
-    <thead>
-      <tr><th></th><th>kind</th><th>episodes</th><th>length</th><th>mean start</th><th>confidence</th></tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-  <p class="hint" id="absentNote"></p>
+  <ul id="clips" class="clips"></ul>
+
+  <h3>Which files contain which clips</h3>
+  <p class="hint">A tick means that clip was located in that file and will be cut from it.</p>
+  <div class="scroll"><table id="matrix"></table></div>
+
+  <h2>2. General music</h2>
+  <p class="hint" id="musicNote"></p>
+
   <div class="row">
-    <label>Mode
-      <select id="mode">
-        <option value="remove">Remove the music</option>
-        <option value="keep">Keep only the music</option>
-      </select>
-    </label>
-    <button id="cut" type="button">Find all music and export</button>
-    <button id="dirBtn" type="button" hidden>Choose output folder…</button>
+    <button id="export" type="button">Remove music and export…</button>
+    <span class="hint" id="exportHint"></span>
   </div>
-  <p class="note">
-    Segmentation is <strong>assistive, not automatic</strong>: it runs close to its decision
-    boundary, so some episodes yield fewer segments than they should. Review the
-    per-episode counts below before trusting the output.
-  </p>
 </section>
 
-<section id="step3" hidden>
-  <h2>Result</h2>
+<!-- ------------------------------------------------------------- done -- -->
+<section id="done" hidden>
+  <h2>Written to disk</h2>
   <table id="results">
-    <thead><tr><th>episode</th><th>segments</th><th>music</th><th>output</th><th>file</th></tr></thead>
+    <thead><tr><th>file</th><th>clips</th><th>music removed</th><th>output</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   <p id="summary" class="note"></p>
@@ -78,8 +90,9 @@
 
 <footer>
   <p class="hint">
-    Serve this page over HTTP (<code>python3 -m http.server</code> from the repo root) —
-    ES modules do not load from <code>file://</code>.
+    Must be served over HTTP — ES modules do not load from <code>file://</code>.
+    From the repo root: <code>python3 -m http.server 8000</code>, then
+    <code>/app/</code>.
   </p>
 </footer>
 

@@ -37,10 +37,13 @@ export function audioDataToChunk(data) {
 /**
  * Demux + decode an MP4 buffer into AudioChunks.
  * @param {Uint8Array} bytes
- * @param {{maxQueue?: number, signal?: AbortSignal}} [opts]
+ * @param {{maxQueue?: number, signal?: AbortSignal, fromSeconds?: number, toSeconds?: number}} [opts]
+ *        fromSeconds/toSeconds decode only the samples covering that span. AAC
+ *        frames are independently decodable and the sample table gives byte
+ *        offsets, so auditioning a 12 s clip costs 12 s of decode, not 22 min.
  */
 export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
-  const { maxQueue = 24 } = opts;
+  const { maxQueue = 24, fromSeconds, toSeconds } = opts;
   if (typeof globalThis.AudioDecoder !== 'function') {
     throw new Error('WebCodecs AudioDecoder is not available in this environment');
   }
@@ -60,6 +63,15 @@ export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
     error: (e) => { failure = e; finished = true; notify(); },
   });
 
+  // range selection straight off the sample table
+  const ts = demuxed.track.timescale;
+  const fromT = fromSeconds !== undefined ? fromSeconds * ts : -Infinity;
+  const toT = toSeconds !== undefined ? toSeconds * ts : Infinity;
+  const wanted = (fromSeconds === undefined && toSeconds === undefined)
+    ? demuxed.samples
+    : demuxed.samples.filter((s) => s.timestamp + s.duration > fromT && s.timestamp < toT);
+  if (!wanted.length) throw new Error('no samples in the requested range');
+
   const config = { codec, sampleRate, numberOfChannels: channels };
   if (description && description.length) config.description = description;
   decoder.configure(config);
@@ -68,7 +80,7 @@ export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
   // balloon memory by queueing every sample at once.
   const producer = (async () => {
     try {
-      for (const s of demuxed.samples) {
+      for (const s of wanted) {
         if (failure || opts.signal?.aborted) break;
         decoder.decode(new EncodedAudioChunk({
           type: 'key',                       // every AAC frame is independently decodable

@@ -176,12 +176,12 @@ independent ground truth, and the known-atypical episode not silently placed.
 ```
 music-analysis/     this package (repo root)
 audio-decode/       encoded audio -> AudioChunk stream, lossless cutting
-app/                web page + CLI over the same orchestration (not published)
+app/                the web page (not published)
 spike/              original research code + CLIs
 ```
 
-`app/cli.mjs` runs the whole chain today; `app/index.html` is the same pipeline
-in a page. See `app/README.md` for what is verified and what is not.
+`app/index.html` is the whole front end. See `app/README.md` for what is
+verified and what is not.
 
 `audio-decode` is a sibling package rather than a subdirectory of `src/` because
 it is independently publishable and has a different runtime profile (it uses
