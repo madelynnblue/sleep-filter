@@ -25,15 +25,21 @@ import { computeFeatures, calibrate, scoreFrames, segment, NFEAT } from './featu
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
 
 /**
- * How the analysis time divides, measured on a 22-minute episode of the reference
- * corpus: decode 1.73s, chroma 0.99s, features 2.51s, fingerprints 0.49s.
+ * How the analysis time divides, measured in place across the first five episodes
+ * of the reference corpus (decode through finish(), in finish()'s own order):
+ * decode 1.75s, chroma 1.00s, fingerprints 0.48s, features 1.50s.
+ *
+ * Measured in place rather than stage-by-stage in isolation: the same functions
+ * timed alone gave fingerprints 0.48s and features 2.5s, because features paid
+ * for a chroma pass of its own that finish() had already run. That duplicate is
+ * gone, and these numbers are what the app actually spends.
  *
  * Used only to weight the progress figure. The decode share is backend-dependent
  * — WebCodecs decodes off the main thread, the ffmpeg fallback spawns a process —
  * so this is approximate by design; the property that matters is that the meter
- * keeps moving through finish(), which is 70% of the work.
+ * keeps moving at a roughly even rate.
  */
-const STAGE_SHARE = { decode: 0.30, chroma: 0.17, features: 0.44, fingerprints: 0.09 };
+const STAGE_SHARE = { decode: 0.36, chroma: 0.21, features: 0.325, fingerprints: 0.105 };
 
 /** Mean frame level, in dB, over [from, to) seconds. Feature 0 is logRms. */
 const LOG_RMS = 0;
@@ -103,6 +109,7 @@ export class EpisodeAnalyzer {
     this._samples = new SampleBuffer();
     this._expectedFrames = 0;
     this._receivedFrames = 0;
+    this._decodeDone = false;
     // fraction done within each finish() stage, folded into `progress`
     this._stage = { chroma: 0, fingerprints: 0, features: 0 };
   }
@@ -123,8 +130,12 @@ export class EpisodeAnalyzer {
         'feed one episode per analyzer'
       );
     }
-    this._receivedFrames += chunk.numberOfFrames;
     const mono = this._resampler.process(chunk);
+    // Counted in TARGET-rate frames, to match expectedFrames. Counting
+    // chunk.numberOfFrames instead measured the input rate, so a 48 kHz source
+    // saturated the ratio after a sixth of the audio and the meter sat at 30%
+    // for the rest of the decode.
+    this._receivedFrames += mono.length;
     if (mono.length) this._samples.push(mono);
     return mono.length;
   }
@@ -136,7 +147,7 @@ export class EpisodeAnalyzer {
     });
     const mono = toMonoAt(data, { sampleRate, channels, targetRate: targetSampleRate });
     if (mono.length) a._samples.push(mono);
-    a._receivedFrames = channels === 1 ? data.length : Math.floor(data.length / channels);
+    a._receivedFrames = mono.length;   // target-rate frames, as in addChunk
     return a;
   }
 
@@ -157,8 +168,12 @@ export class EpisodeAnalyzer {
    * has to get right is not stalling at 100%.
    */
   get progress() {
-    if (!this._expectedFrames) return null;
-    const decodeFrac = Math.min(1, this._receivedFrames / this._expectedFrames);
+    if (!this._expectedFrames && !this._decodeDone) return null;
+    // Once finish() has been reached, decode is over by definition — the
+    // resampler's tail can leave the counted frames a shade under the estimate.
+    const decodeFrac = this._decodeDone
+      ? 1
+      : Math.min(1, this._receivedFrames / this._expectedFrames);
     return Math.min(1,
       STAGE_SHARE.decode * decodeFrac +
       STAGE_SHARE.chroma * this._stage.chroma +
@@ -175,6 +190,7 @@ export class EpisodeAnalyzer {
    */
   finish(opts = {}) {
     const { chroma = true, fingerprints = true, segments = true } = opts;
+    this._decodeDone = true;
     const samples = this._samples.view();
     const sampleRate = this.targetSampleRate;
 
@@ -200,7 +216,10 @@ export class EpisodeAnalyzer {
 
     if (chroma) out.chroma = run('chroma', (p) => computeChroma(samples, { sampleRate, onProgress: p }));
     if (fingerprints) out.fingerprints = run('fingerprints', (p) => fingerprint(samples, { sampleRate, onProgress: p }));
-    if (segments) out.features = run('features', (p) => computeFeatures(samples, { sampleRate, onProgress: p }));
+    // hand features the chroma pass we just ran instead of letting it redo it
+    if (segments) out.features = run('features', (p) => computeFeatures(samples, {
+      sampleRate, onProgress: p, chroma: out.chroma ?? null,
+    }));
     return out;
   }
 }

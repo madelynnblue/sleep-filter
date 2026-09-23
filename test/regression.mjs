@@ -434,6 +434,73 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
      seen.filter((p) => p > 0.35 && p < 0.95).length > 3);
 }
 
+/* ------------------------------------------------- decode progress units -- */
+//
+// Decode progress has to be counted in the same units as expectedFrames. It was
+// counted in INPUT frames while expectedFrames is in TARGET frames, so a 48 kHz
+// source saturated the ratio after a sixth of the audio: progress stopped at 30%
+// and stayed there for the rest of the decode.
+{
+  const a = new EpisodeAnalyzer({ id: 'decode-units' });
+  const SECONDS = 60, SRC = 48000, CH = 4800;      // 0.1s chunks at the source rate
+  a.expectedFrames = SECONDS * a.targetSampleRate;
+
+  const trace = [];
+  for (let off = 0; off + CH <= SECONDS * SRC; off += CH) {
+    a.addChunk({
+      sampleRate: SRC, numberOfFrames: CH, numberOfChannels: 1,
+      format: 'f32-planar', data: [new Float32Array(CH)],
+    });
+    trace.push(a.progress);
+  }
+  const at = (f) => trace[Math.floor(trace.length * f)];
+  // derive the decode share rather than pinning it, so re-weighting the stages
+  // does not silently invalidate these assertions
+  const share = trace.at(-1);
+
+  ok(`decode progress tracks the audio, not the input rate (${(at(0.5) * 100).toFixed(1)}% at halfway, share ${(share * 100).toFixed(0)}%)`,
+     Math.abs(at(0.5) - share / 2) < share * 0.05);
+  ok(`decode progress stays monotonic (${(at(0.25) * 100).toFixed(1)} / ${(at(0.75) * 100).toFixed(1)}%)`,
+     trace.every((p, i) => i === 0 || p >= trace[i - 1] - 1e-9));
+  ok('decode progress never exceeds its share before finish()',
+     trace.every((p) => p <= share + 1e-9));
+
+  a.finish({ chroma: false, fingerprints: false, segments: false });
+  ok(`decode is credited in full once finish() runs (${(a.progress * 100).toFixed(0)}%)`,
+     a.progress >= share - 1e-9);
+}
+
+/* ------------------------------------------- computeFeatures reporting -- */
+//
+// Two things that made the meter lumpy, both invisible without a test:
+//  - the modulation-energy and self-similarity passes after the STFT loop are
+//    ~30% of the stage, and went unmetered, so the bar sat still at the end of
+//    every episode;
+//  - finish() computed chroma, then computeFeatures silently computed it AGAIN.
+{
+  const x = cat(musicSignal(20 * RATE), speechSignal(20 * RATE));
+  const chroma = computeChroma(x, { sampleRate: RATE });
+
+  const seen = [];
+  computeFeatures(x, { sampleRate: RATE, chroma, onProgress: (f) => seen.push(f) });
+
+  ok(`computeFeatures meters its tail passes (${seen.filter((f) => f >= 0.70 - 1e-9).length} reports at or after 70%)`,
+     seen.filter((f) => f >= 0.70 - 1e-9).length >= 3);
+  ok('computeFeatures progress is monotonic and ends at 1',
+     seen.every((f, i) => i === 0 || f >= seen[i - 1] - 1e-9) && Math.abs(seen.at(-1) - 1) < 1e-9);
+
+  // the handoff must be exact, not merely close: same chroma, same numbers
+  const a = computeFeatures(x, { sampleRate: RATE });
+  const b = computeFeatures(x, { sampleRate: RATE, chroma });
+  ok('reusing a chroma pass gives bit-identical features',
+     a.feats.length === b.feats.length && a.feats.every((v, i) => v === b.feats[i]));
+
+  // and a chroma from a different frame grid must be refused, not silently used
+  let threw = false;
+  try { computeFeatures(x, { sampleRate: RATE, chroma, nfft: 1024, hop: 256 }); } catch { threw = true; }
+  ok('a mismatched chroma is rejected rather than misused', threw);
+}
+
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

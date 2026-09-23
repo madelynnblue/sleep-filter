@@ -38,15 +38,47 @@ const NFEAT = FEATURE_NAMES.length;
  * @returns {{feats: Float32Array, nFrames, frameRate, duration, logRms}}
  *   feats is flat, stride NFEAT.
  */
+/** Share of computeFeatures' work spent in its chroma pass (measured, see below). */
+const CHROMA_SHARE = 0.4;
+/**
+ * Within computeFeatures' own work: the STFT loop, then the modulation-energy and
+ * chroma-self-similarity passes. That second group is ~30% of the stage and went
+ * unmetered, leaving the bar motionless for the last third of a second of every
+ * episode.
+ */
+const LOOP_SHARE = 0.70;
+const MOD_SHARE = 0.98;
+
 export function computeFeatures(samples, opts = {}) {
   const {
     sampleRate = 8000,
     nfft = 2048,
     hop = 512,
     fLow = 250,     // "bass" band edge
+    chroma: providedChroma = null,
+    onProgress = null,
   } = opts;
 
-  const chroma = computeChroma(samples, { sampleRate, nfft, hop });
+  // chromaSelf needs a chroma pass, which is ~40% of this stage. finish()
+  // already computes one for the library, so it hands that over rather than
+  // paying for an identical second pass — worth about a second per 22-minute
+  // episode. When this function runs one itself it reports through it, because
+  // leaving that 40% unmetered is what made the bar stall in the middle.
+  let chroma = providedChroma;
+  if (chroma) {
+    const expected = Math.max(0, Math.floor((samples.length - nfft) / hop) + 1);
+    if (chroma.nFrames !== expected) {
+      throw new Error('computeFeatures: provided chroma was not computed with this nfft/hop');
+    }
+  } else {
+    chroma = computeChroma(samples, {
+      sampleRate, nfft, hop,
+      onProgress: onProgress ? (f) => onProgress(f * CHROMA_SHARE) : undefined,
+    });
+  }
+  const base = providedChroma ? 0 : CHROMA_SHARE;
+  const report = onProgress ? (f) => onProgress(base + (1 - base) * f) : null;
+
   const nFrames = chroma.nFrames;
   const half = nfft >> 1;
 
@@ -67,7 +99,6 @@ export function computeFeatures(samples, opts = {}) {
   // largest source of churn in the pipeline.
   const magBuf = [new Float32Array(half + 1), new Float32Array(half + 1)];
 
-  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
   const tickEvery = Math.max(1, Math.floor(nFrames / 100));
 
   for (let t = 0; t < nFrames; t++) {
@@ -103,8 +134,10 @@ export function computeFeatures(samples, opts = {}) {
       for (let k = 0; k <= half; k++) { d += Math.max(0, mag[k] - prevMag[k]); s += mag[k]; }
       flux[t] = s > 0 ? d / s : 0;
     }
-    if (onProgress && t % tickEvery === 0) onProgress(t / nFrames);
+    if (report && t % tickEvery === 0) report((t / nFrames) * LOOP_SHARE);
   }
+
+  report?.(LOOP_SHARE);
 
   // --- 4 Hz modulation energy: the speech cue (Scheirer & Slaney) ---
   //
@@ -155,6 +188,8 @@ export function computeFeatures(samples, opts = {}) {
     }
   }
 
+  report?.(MOD_SHARE);
+
   // --- chroma self-similarity: music holds harmony and repeats, speech does not ---
   const chromaSelf = new Float32Array(nFrames);
   const lags = [Math.round(0.5 * fps), Math.round(1.0 * fps), Math.round(2.0 * fps)];
@@ -180,7 +215,7 @@ export function computeFeatures(samples, opts = {}) {
     feats[o + 5] = chromaSelf[t];
   }
 
-  onProgress?.(1);
+  report?.(1);
   return { feats, nFrames, frameRate: fps, duration: samples.length / sampleRate, logRms };
 }
 
