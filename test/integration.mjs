@@ -26,6 +26,8 @@ import { EpisodeAnalyzer, Library, discover } from '../src/index.mjs';
 // Exercise the REAL package boundary rather than shelling out to ffmpeg here:
 // audio-decode produces the chunks a browser's WebCodecs path would produce.
 import { openAudioFile } from '../audio-decode/src/index.mjs';
+// the path the worker actually calls, for the progress check at the end
+import { analyzeOne } from '../app/pipeline.mjs';
 
 const SR = 8000;
 const DIR = process.argv[2] || join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -168,6 +170,21 @@ ok(`segmentation covers the theme in ${themeHits}/${segOut.length} episodes`,
   }
   ok(`music segments never overlap (worst ${worst.toFixed(2)}s${where ? ` in ${where}` : ''})`,
      worst <= 0);
+}
+
+// analyzeOne is the path the worker actually calls. Asserting on finish() alone
+// does not catch a missing wire between them — which is exactly how the meter
+// came to stall at 30% and then jump to 100.
+{
+  const seen = [];
+  await analyzeOne(files[0].path, files[0].id, {
+    onProgress: (p) => { if (p !== null) seen.push(p); },
+  });
+  const mid = seen.filter((p) => p > 0.35 && p < 0.95).length;
+  ok(`analyzeOne reports through finish(), not just the decode (${mid} updates between 35% and 95%)`,
+     mid > 5);
+  ok(`analyzeOne progress is monotonic and ends at 1 (${(seen.at(-1) * 100).toFixed(0)}%)`,
+     seen.every((p, i) => i === 0 || p >= seen[i - 1] - 1e-9) && Math.abs(seen.at(-1) - 1) < 1e-9);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

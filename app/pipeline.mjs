@@ -70,7 +70,10 @@ export async function analyzeOne(source, id, opts = {}) {
     analyzer.addChunk(chunk);
     opts.onProgress?.(analyzer.progress);
   }
-  const analysis = analyzer.finish();
+  // finish() must be given onProgress too: decode is only ~30% of the work, so
+  // without this the meter stops at 30% and jumps to 100 when the worker's
+  // 'done' message lands.
+  const analysis = analyzer.finish({ onProgress: opts.onProgress });
   analysis.info = info;
   analysis.backend = backend;
   return analysis;
