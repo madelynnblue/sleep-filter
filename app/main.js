@@ -578,7 +578,7 @@ $('export').onclick = async () => {
     let outDir = null;
     if (hasFS) {
       try { outDir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
-      catch { $('export').disabled = false; $('export').textContent = 'Remove music and export…'; return; }
+      catch { $('export').disabled = false; $('export').textContent = 'Export…'; return; }
     }
 
     const tb = $('results').querySelector('tbody');
@@ -625,6 +625,6 @@ $('export').onclick = async () => {
     $('done').hidden = false;
   } finally {
     $('export').disabled = false;
-    $('export').textContent = 'Remove music and export…';
+    $('export').textContent = 'Export…';
   }
 };
