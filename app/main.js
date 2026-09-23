@@ -431,6 +431,29 @@ function calibrationExemplars() {
   return state.assets.slice(0, 3);
 }
 
+/**
+ * Audio the theme stage will cut, per episode, taken from the clips the user has
+ * ticked — the same set the export builds its cut ranges from. Music detection
+ * is calibrated on exactly those clips, so it reliably re-finds the theme in
+ * every episode; without this the same seconds would be listed and cut twice.
+ *
+ * Unticked clips are absent by design: nothing is being removed for them, so
+ * there is no duplicate to avoid.
+ */
+function themeRanges() {
+  const out = new Map();
+  for (const i of state.selected) {
+    const asset = state.shown[i];
+    if (!asset) continue;
+    for (const e of asset.episodes) {
+      if (e.present === false || e.start == null) continue;
+      if (!out.has(e.id)) out.set(e.id, []);
+      out.get(e.id).push([e.start, e.end]);
+    }
+  }
+  return out;
+}
+
 // Settings re-run detection. Phase 1 is skipped when nothing is pending, so this
 // costs nothing — the analyses are already in memory.
 $('featThemes').onchange = () => autoRun();
@@ -445,7 +468,7 @@ function computeMusic() {
   if (!$('featMusic').checked) { state.music = []; return; }
   const ex = calibrationExemplars();
   if (!ex.length) { state.music = []; return; }
-  state.music = musicRangesFor(state.library, ex, {}).map((r) => ({
+  state.music = musicRangesFor(state.library, ex, { exclude: themeRanges() }).map((r) => ({
     id: r.id,
     segments: r.segments,
     enabled: new Set(r.segments.map((_, i) => i)),
@@ -538,7 +561,6 @@ if (!hasFS) $('exportHint').textContent = 'Files will download individually.';
 $('export').onclick = async () => {
   const wantThemes = $('featThemes').checked;
   const wantMusic = $('featMusic').checked;
-  const clips = [...state.selected].map((i) => state.shown[i]).filter(Boolean);
 
   $('export').disabled = true;
   $('export').textContent = 'Working…';
@@ -551,12 +573,7 @@ $('export').onclick = async () => {
       perFile.get(id).push([a, b]);
     };
     if (wantThemes) {
-      for (const a of clips) {
-        for (const e of a.episodes) {
-          if (e.present === false || e.start == null) continue;
-          add(e.id, e.start, e.end);
-        }
-      }
+      for (const [id, ranges] of themeRanges()) for (const [a, b] of ranges) add(id, a, b);
     }
     if (wantMusic) {
       // Only ENABLED segments are cut — an unticked segment is kept, even though

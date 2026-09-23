@@ -53,6 +53,9 @@ export function exampleRegion(asset) {
   return { id: ref.id, start: ref.start, end: ref.end };
 }
 
+/** Does `seg` share any audio with one of `ranges`? */
+const overlapsAny = (seg, ranges) => ranges.some(([a, b]) => seg.start < b && a < seg.end);
+
 /**
  * Per-episode music ranges, calibrated on the detected regions of one or more
  * assets. Using several as positives gives the discriminant more to learn from
@@ -60,6 +63,10 @@ export function exampleRegion(asset) {
  *
  * @param {import('../src/library.mjs').Library} library
  * @param {object[]} assets
+ * @param {Map<string, Array<[number, number]>>} [opts.exclude]
+ *        per episode, audio already being cut for another reason. Segments
+ *        overlapping any of it are dropped, so the same seconds are never
+ *        proposed twice.
  */
 export function musicRangesFor(library, assets, opts = {}) {
   const positives = new Map();
@@ -76,7 +83,9 @@ export function musicRangesFor(library, assets, opts = {}) {
     if (!ep?.features) continue;
     try {
       const { segments } = segmentEpisode(ep, ranges, opts.segment ?? {});
-      out.push({ id, segments, ranges: rangesFromSegments(segments) });
+      const taken = opts.exclude?.get(id);
+      const kept = taken?.length ? segments.filter((s) => !overlapsAny(s, taken)) : segments;
+      out.push({ id, segments: kept, ranges: rangesFromSegments(kept) });
     } catch (err) {
       out.push({ id, segments: [], ranges: [], error: err.message });
     }
