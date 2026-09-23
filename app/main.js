@@ -72,9 +72,48 @@ function renderFiles() {
     return `<li>${playButton(`ep:${f.id}`, 'Play this episode')}` +
            `<span class="id">${f.id}</span>` +
            `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
-           `<span class="st ${f.status}">${label}</span></li>`;
+           `<span class="st ${f.status}">${label}</span>` +
+           `<button class="x" type="button" data-id="${f.id}" ` +
+           `title="Remove this file" aria-label="Remove ${f.id}">×</button></li>`;
   }).join('');
   wirePlayButtons($('filelist'));
+  for (const el of $('filelist').querySelectorAll('button.x')) {
+    el.onclick = () => removeFile(el.dataset.id);
+  }
+}
+
+/**
+ * Drop a file and everything derived from it.
+ *
+ * Discovery is cross-episode, so removing one file invalidates every result, not
+ * just that file's — the theme's support count, its per-episode positions and
+ * therefore the music calibration all shift. Re-running is the only honest
+ * option, and it costs nothing because phase 1 is already in memory.
+ */
+function removeFile(id) {
+  state.files = state.files.filter((f) => f.id !== id);
+  state.analyses = state.analyses.filter((a) => a.id !== id);
+  clearPreviews();
+  renderFiles();
+  if (!state.files.length) { resetResults(); return; }
+  autoRun();
+}
+
+/** Nothing left to describe: clear the results rather than leave stale ones up. */
+function resetResults() {
+  state.library = null;
+  state.assets = [];
+  state.shown = [];
+  state.selected = new Set();
+  state.music = [];
+  setStatus('');
+  $('verify').hidden = true;
+  $('done').hidden = true;
+  $('clips').innerHTML = '';
+  $('matrix').innerHTML = '';
+  $('music').innerHTML = '';
+  $('results').querySelector('tbody').innerHTML = '';
+  $('summary').textContent = '';
 }
 
 const pendingFiles = () => state.files.filter((f) => f.status === 'queued' || f.status === 'error');
@@ -150,11 +189,16 @@ async function analyzePool() {
   const results = [];
   await Promise.all(Array.from({ length: limit }, async () => {
     while (next < pending.length) {
-      const a = await analyzeInWorker(pending[next++]);
+      const p = pending[next++];
+      // removed while it sat in the queue: do not spend a decode on it
+      if (!state.files.includes(p)) continue;
+      const a = await analyzeInWorker(p);
       if (a) results.push(a);
     }
   }));
-  state.analyses.push(...results);
+  // nor let a file removed MID-decode leave its analysis behind, where it would
+  // go on contributing to discovery
+  state.analyses.push(...results.filter((a) => state.files.some((f) => f.id === a.id)));
   return results.length;
 }
 

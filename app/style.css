@@ -37,12 +37,15 @@ select { background:var(--panel); color:var(--fg); border:1px solid var(--line);
 
 .row { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin:1rem 0; }
 .files { list-style:none; margin:1rem 0; padding:0; }
-.files li { display:grid; grid-template-columns:2.2rem 1fr 6rem 9rem; gap:.75rem;
+.files li { display:grid; grid-template-columns:2.2rem 1fr 6rem 9rem 1.6rem; gap:.75rem;
   align-items:center; padding:.4rem .6rem; border-bottom:1px solid var(--line); font-size:.87rem; }
 .files .sz { color:var(--dim); text-align:right; }
 .files .st { text-align:right; color:var(--dim); }
 .files .st.done { color:var(--ok); }
 .files .st.error { color:var(--warn); }
+button.x { background:none; border:0; color:var(--dim); padding:0; line-height:1;
+  font:inherit; font-weight:400; font-size:1rem; cursor:pointer; }
+button.x:hover { color:var(--warn); }
 
 fieldset.features { border:1px solid var(--line); border-radius:8px; padding:1rem 1rem .5rem; margin:1.5rem 0; }
 fieldset.features legend { color:var(--dim); font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; }
