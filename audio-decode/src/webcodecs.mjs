@@ -1,0 +1,106 @@
+/**
+ * WebCodecs decode driver (browser).
+ *
+ * WebCodecs gives you a decoder but no demuxer and no chunking policy, so this
+ * supplies the missing half: feed demuxed samples in with backpressure, collect
+ * AudioData, hand back AudioChunks in the shape music-analysis expects.
+ *
+ * Browser-only by construction — it never imports anything from Node, and is
+ * only reachable when `globalThis.AudioDecoder` exists.
+ */
+
+import { demuxMp4 } from './mp4.mjs';
+
+/** AudioData -> the AudioChunk contract (planar f32, one Float32Array per channel). */
+export function audioDataToChunk(data) {
+  const channels = data.numberOfChannels;
+  const frames = data.numberOfFrames;
+  const planes = new Array(channels);
+  for (let c = 0; c < channels; c++) {
+    const plane = new Float32Array(frames);
+    // copyTo converts from whatever the decoder emitted into planar f32
+    data.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+    planes[c] = plane;
+  }
+  const chunk = {
+    sampleRate: data.sampleRate,
+    numberOfFrames: frames,
+    numberOfChannels: channels,
+    format: 'f32-planar',
+    data: planes,
+    timestamp: data.timestamp,   // microseconds
+  };
+  data.close();
+  return chunk;
+}
+
+/**
+ * Demux + decode an MP4 buffer into AudioChunks.
+ * @param {Uint8Array} bytes
+ * @param {{maxQueue?: number, signal?: AbortSignal}} [opts]
+ */
+export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
+  const { maxQueue = 24 } = opts;
+  if (typeof globalThis.AudioDecoder !== 'function') {
+    throw new Error('WebCodecs AudioDecoder is not available in this environment');
+  }
+  const demuxed = demuxMp4(bytes);
+  const { codec, sampleRate, channels, description } = demuxed.track;
+  if (!codec) throw new Error('no usable codec string in the MP4 audio track');
+  if (demuxed.fragmented) throw new Error('fragmented MP4 is not supported by the built-in demuxer');
+
+  const pending = [];
+  let wake = null;
+  let finished = false;
+  let failure = null;
+  const notify = () => { if (wake) { const w = wake; wake = null; w(); } };
+
+  const decoder = new AudioDecoder({
+    output: (data) => { pending.push(data); notify(); },
+    error: (e) => { failure = e; finished = true; notify(); },
+  });
+
+  const config = { codec, sampleRate, numberOfChannels: channels };
+  if (description && description.length) config.description = description;
+  decoder.configure(config);
+
+  // Producer: feed samples, respecting decodeQueueSize so a long file cannot
+  // balloon memory by queueing every sample at once.
+  const producer = (async () => {
+    try {
+      for (const s of demuxed.samples) {
+        if (failure || opts.signal?.aborted) break;
+        decoder.decode(new EncodedAudioChunk({
+          type: 'key',                       // every AAC frame is independently decodable
+          timestamp: s.timestampUs,
+          duration: s.durationUs,
+          data: bytes.subarray(s.offset, s.offset + s.size),
+        }));
+        while (decoder.decodeQueueSize > maxQueue && !failure) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      await decoder.flush();
+    } catch (e) {
+      failure = failure ?? e;
+    } finally {
+      finished = true;
+      notify();
+    }
+  })();
+
+  try {
+    while (!finished || pending.length) {
+      if (!pending.length) {
+        await new Promise((r) => { wake = r; });
+        if (failure) break;
+        continue;
+      }
+      yield audioDataToChunk(pending.shift());
+    }
+    await producer;
+    if (failure) throw failure;
+  } finally {
+    try { decoder.close(); } catch { /* already closed */ }
+  }
+}

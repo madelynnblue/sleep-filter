@@ -1,0 +1,24 @@
+{
+  "name": "audio-decode",
+  "version": "0.1.0",
+  "description": "Encoded audio -> raw AudioChunk stream. WebCodecs + a built-in MP4 demuxer, with an ffmpeg fallback. No server, no WASM for the common case.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./mp4": "./src/mp4.mjs",
+    "./container": "./src/container.mjs",
+    "./webcodecs": "./src/webcodecs.mjs"
+  },
+  "files": ["src", "README.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test/demux.mjs && node test/decode.mjs",
+    "test:demux": "node test/demux.mjs --all",
+    "test:decode": "node test/decode.mjs"
+  },
+  "keywords": ["webcodecs", "mp4", "demuxer", "iso-bmff", "aac", "audio", "browser", "decoder"],
+  "license": "MIT",
+  "dependencies": {}
+}

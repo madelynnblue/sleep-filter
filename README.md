@@ -170,6 +170,20 @@ independent ground truth, and the known-atypical episode not silently placed.
   transfers.
 - **No formal abstention** at the library level yet.
 
+## Repo layout
+
+```
+music-analysis/     this package (repo root)
+audio-decode/       encoded audio -> AudioChunk stream  (sibling package)
+spike/              original research code + CLIs
+```
+
+`audio-decode` is a sibling package rather than a subdirectory of `src/` because
+it is independently publishable and has a different runtime profile (it uses
+Node's `child_process` for its fallback; this package uses nothing platform
+specific). If the repo grows a third package it is worth restructuring into
+`packages/*` npm workspaces — not worth the churn at two.
+
 ## `spike/`
 
 The original research code and CLIs that produced the validation numbers, kept as

@@ -23,6 +23,9 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { homedir } from 'node:os';
 import { EpisodeAnalyzer, Library } from '../src/index.mjs';
+// Exercise the REAL package boundary rather than shelling out to ffmpeg here:
+// audio-decode produces the chunks a browser's WebCodecs path would produce.
+import { openAudioFile } from '../audio-decode/src/index.mjs';
 
 const SR = 8000;
 const DIR = process.argv[2] || join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -64,31 +67,15 @@ if (files.length < 5) {
   process.exit(0);
 }
 
-/** Decode to f32 chunks at 48 kHz stereo — the shape a WebCodecs decoder gives. */
-function* decodeAsChunks(file) {
-  const r = spawnSync('ffmpeg', ['-v', 'error', '-i', file, '-ac', '2', '-ar', '48000',
-    '-f', 'f32le', '-'], { maxBuffer: 1024 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`ffmpeg failed on ${file}`);
-  const all = new Float32Array(r.stdout.buffer, r.stdout.byteOffset, r.stdout.byteLength / 4);
-  const FRAMES = 48000;                       // 1 s chunks
-  for (let o = 0; o < all.length; o += FRAMES * 2) {
-    const n = Math.min(FRAMES, (all.length - o) / 2) | 0;
-    if (n <= 0) break;
-    yield {
-      sampleRate: 48000, numberOfFrames: n, numberOfChannels: 2,
-      format: 'f32', data: all.subarray(o, o + n * 2), timestamp: 0,
-    };
-  }
-}
-
 console.log(`decoding ${files.length} episodes through the public API ` +
-            '(48 kHz stereo chunks -> EpisodeAnalyzer -> Library)\n');
+            '(audio-decode -> EpisodeAnalyzer -> Library)\n');
 
 const lib = new Library();
 const t0 = Date.now();
 for (const f of files) {
   const a = new EpisodeAnalyzer({ id: f.id });
-  for (const chunk of decodeAsChunks(f.path)) a.addChunk(chunk);
+  const { chunks } = await openAudioFile(f.path);
+  for await (const chunk of chunks()) a.addChunk(chunk);
   lib.add(a.finish());
 }
 console.log(`  analyzed in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
