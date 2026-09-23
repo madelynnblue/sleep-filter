@@ -14,7 +14,10 @@
  */
 
 import { demuxMp4 } from './mp4.mjs';
+import { demuxFlac, muxFlac } from './flac.mjs';
+import { demuxMp3, muxMp3 } from './mp3.mjs';
 import { muxAudioMp4 } from './mux.mjs';
+import { sniffContainer } from './container.mjs';
 
 /** Sort and merge overlapping [start, end) ranges in seconds. */
 export function normalizeRanges(ranges) {
@@ -81,7 +84,10 @@ export function selectSamples(demuxed, ranges, opts = {}) {
  * @returns {{bytes: Uint8Array, info: object}}
  */
 export function cutAudio(source, ranges, opts = {}) {
-  const demuxed = demuxMp4(source);
+  const container = opts.container ?? sniffContainer(source.subarray(0, 16));
+  const demuxed = container === 'flac' ? demuxFlac(source)
+    : container === 'mp3' ? demuxMp3(source)
+    : demuxMp4(source);
   if (demuxed.fragmented) {
     throw new Error('cutAudio: fragmented MP4 is not supported (the fallback decoder can re-encode instead)');
   }
@@ -90,16 +96,27 @@ export function cutAudio(source, ranges, opts = {}) {
   const sel = selectSamples(demuxed, ranges, opts);
   if (!sel.kept.length) throw new Error('cutAudio: every sample would be removed — refusing to write an empty file');
 
-  // The priming trim only applies if the original first sample survived. If the
-  // cut removed the head, the new first frame carries no encoder delay.
-  const keptHead = sel.kept[0] === demuxed.samples[0];
-  const bytes = muxAudioMp4(source, demuxed.track, sel.kept, {
-    ...opts,
-    editMediaTime: keptHead ? demuxed.track.editMediaTime : 0,
-    // tags travel with the audio: the cut is the same episode, so its title,
-    // artist, track number and so on still describe it
-    udta: demuxed.udtaRaw,
-  });
+  let bytes;
+  if (container === 'flac') {
+    // Frames are independent, so dropping whole ones is lossless.
+    bytes = muxFlac(source, demuxed, sel.kept);
+  } else if (container === 'mp3') {
+    // Frame splicing: the bit reservoir means the first frame after a cut can
+    // reference bytes that are no longer there. A few milliseconds, and
+    // inherent to cutting MP3 without re-encoding.
+    bytes = muxMp3(source, demuxed, sel.kept);
+  } else {
+    // The priming trim only applies if the original first sample survived. If
+    // the cut removed the head, the new first frame carries no encoder delay.
+    const keptHead = sel.kept[0] === demuxed.samples[0];
+    bytes = muxAudioMp4(source, demuxed.track, sel.kept, {
+      ...opts,
+      editMediaTime: keptHead ? demuxed.track.editMediaTime : 0,
+      // tags travel with the audio: the cut is the same episode, so its title,
+      // artist, track number and so on still describe it
+      udta: demuxed.udtaRaw,
+    });
+  }
   const ts = demuxed.track.timescale;
   const frameSec = demuxed.samples[0].duration / ts;
 

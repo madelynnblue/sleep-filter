@@ -17,12 +17,16 @@
 
 import { sniffContainer } from './container.mjs';
 import { demuxMp4 } from './mp4.mjs';
-import { decodeMp4WithWebCodecs } from './webcodecs.mjs';
+import { demuxFlac, muxFlac } from './flac.mjs';
+import { demuxMp3, muxMp3 } from './mp3.mjs';
+import { decodeWithWebCodecs } from './webcodecs.mjs';
 import { readSource, writeTempFile } from './source.mjs';
 
 export { sniffContainer, MP4_EXTENSIONS } from './container.mjs';
 export { demuxMp4, parseAudioSpecificConfig, readTags, readTagsFromMoov } from './mp4.mjs';
-export { decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
+export { demuxFlac, muxFlac } from './flac.mjs';
+export { demuxMp3, muxMp3 } from './mp3.mjs';
+export { decodeWithWebCodecs, decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
 export { readSource } from './source.mjs';
 export { muxAudioMp4 } from './mux.mjs';
 export { cutAudio, selectSamples, normalizeRanges, rangesFromSegments } from './cut.mjs';
@@ -39,12 +43,21 @@ async function loadFfmpeg() {
   }
 }
 
-/** Does the built-in path apply to this buffer? */
+/**
+ * Does the built-in path apply to this buffer?
+ *
+ * Three containers are handled natively. Everything else — Ogg, WMA, WebM,
+ * anything unrecognised — still needs a decoder that is not here, and says so
+ * rather than failing obscurely.
+ */
 function builtInViable(bytes, head, opts) {
   const container = sniffContainer(head);
-  if (container !== 'mp4' || opts.forceFfmpeg) return null;
+  if (opts.forceFfmpeg) return null;
+  if (container !== 'mp4' && container !== 'flac' && container !== 'mp3') return null;
   try {
-    const demuxed = demuxMp4(bytes);
+    const demuxed = container === 'mp4' ? demuxMp4(bytes)
+      : container === 'flac' ? demuxFlac(bytes)
+      : demuxMp3(bytes);
     if (demuxed.fragmented || !demuxed.track.codec || !demuxed.track.sampleCount) {
       return { container, reason: demuxed.fragmented ? 'fragmented MP4' : 'no usable audio track' };
     }
@@ -78,18 +91,18 @@ export async function openAudioFile(source, opts = {}) {
       if (hasWebCodecs) {
         const t = viable.demuxed.track;
         return {
-          container: 'mp4',
+          container: viable.container,
           backend: 'webcodecs',
           info: {
             name: res.name,
-            container: 'mp4',
+            container: viable.container,
             codec: t.codec,
             sampleRate: t.sampleRate,
             channels: t.channels,
             duration: viable.demuxed.durationUs / 1e6,
             sampleCount: t.sampleCount,
           },
-          chunks: () => decodeMp4WithWebCodecs(bytes, opts),
+          chunks: () => decodeWithWebCodecs(bytes, viable.demuxed, opts),
         };
       }
       if (wanted === 'webcodecs') {
@@ -97,7 +110,7 @@ export async function openAudioFile(source, opts = {}) {
       }
       // else: fall through to ffmpeg (Node has none of this natively)
     } else if (wanted === 'webcodecs') {
-      throw new Error(`backend "webcodecs" cannot handle this input: ${viable?.reason ?? 'not MP4'}`);
+      throw new Error(`backend "webcodecs" cannot handle this input: ${viable?.reason ?? `no built-in demuxer for ${viable?.container ?? 'this container'}`}`);
     }
   }
 

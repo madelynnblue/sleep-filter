@@ -34,6 +34,13 @@ const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, 
 
 // Titles are read out of the file itself, so they are untrusted text: without
 // this a stray < or & in a tag would break the row it is rendered into.
+// The container is whatever came in, so the download needs the matching type.
+const AUDIO_MIME = {
+  m4a: 'audio/mp4', mp4: 'audio/mp4', flac: 'audio/flac', mp3: 'audio/mpeg',
+};
+const audioMime = (name) =>
+  AUDIO_MIME[String(name).split('.').pop().toLowerCase()] ?? 'application/octet-stream';
+
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const hasWebCodecs = typeof globalThis.AudioDecoder === 'function';
@@ -795,7 +802,7 @@ $('export').onclick = async () => {
         await w.close();
         where = name;
       } else {
-        const url = URL.createObjectURL(new Blob([out], { type: 'audio/mp4' }));
+        const url = URL.createObjectURL(new Blob([out], { type: audioMime(name) }));
         const a = document.createElement('a');
         a.href = url; a.download = name; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);

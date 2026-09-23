@@ -35,21 +35,25 @@ export function audioDataToChunk(data) {
 }
 
 /**
- * Demux + decode an MP4 buffer into AudioChunks.
+ * Decode an already-demuxed buffer into AudioChunks.
+ *
+ * Container-agnostic: all it needs is a track description and a list of samples
+ * with byte offsets, which every demuxer here produces.
+ *
  * @param {Uint8Array} bytes
+ * @param {object} demuxed  output of demuxMp4 / demuxFlac / demuxMp3
  * @param {{maxQueue?: number, signal?: AbortSignal, fromSeconds?: number, toSeconds?: number}} [opts]
- *        fromSeconds/toSeconds decode only the samples covering that span. AAC
- *        frames are independently decodable and the sample table gives byte
- *        offsets, so auditioning a 12 s clip costs 12 s of decode, not 22 min.
+ *        fromSeconds/toSeconds decode only the samples covering that span. Frames
+ *        are independently decodable and the sample list gives byte offsets, so
+ *        auditioning a 12 s clip costs 12 s of decode, not 22 min.
  */
-export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
+export async function* decodeWithWebCodecs(bytes, demuxed, opts = {}) {
   const { maxQueue = 24, fromSeconds, toSeconds } = opts;
   if (typeof globalThis.AudioDecoder !== 'function') {
     throw new Error('WebCodecs AudioDecoder is not available in this environment');
   }
-  const demuxed = demuxMp4(bytes);
   const { codec, sampleRate, channels, description } = demuxed.track;
-  if (!codec) throw new Error('no usable codec string in the MP4 audio track');
+  if (!codec) throw new Error('no usable codec string in the audio track');
   if (demuxed.fragmented) throw new Error('fragmented MP4 is not supported by the built-in demuxer');
 
   const pending = [];
@@ -115,4 +119,9 @@ export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
   } finally {
     try { decoder.close(); } catch { /* already closed */ }
   }
+}
+
+/** Convenience wrapper for MP4 input, which is what most callers have. */
+export async function* decodeMp4WithWebCodecs(bytes, opts = {}) {
+  yield* decodeWithWebCodecs(bytes, demuxMp4(bytes), opts);
 }

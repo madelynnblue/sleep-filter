@@ -40,8 +40,10 @@ and nothing is uploaded.
 - **Large batches.** Tried with a few files. A full season is 19 decodes with no
   caching, so re-running re-decodes everything — IndexedDB is the obvious fix and
   the results are already structured-cloneable for it.
-- **Non-MP4 containers in a page.** The ffmpeg fallback is Node-only, so a
-  container the built-in demuxer refuses has no path here.
+- **Containers beyond MP4, FLAC and MP3.** Those three have built-in demuxers;
+  Ogg, WMA and WebM do not, and the ffmpeg fallback is Node-only, so they have no
+  path in a page. What is missing for them is a demuxer, not a decoder —
+  WebCodecs decodes Opus and Vorbis, it just cannot find the frames.
 - **Output equivalence with the CLI.** Both go through the same orchestration and
   the same cutter, so they should agree sample-for-sample, but this has not been
   compared directly.

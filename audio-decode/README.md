@@ -21,7 +21,7 @@ for await (const chunk of chunks()) analysis.addChunk(chunk);
 
 | | when | what it covers |
 |---|---|---|
-| **`webcodecs`** | `AudioDecoder` exists and the container is MP4 | non-fragmented MP4/M4A/MOV. **No external binary, no WASM payload.** |
+| **`webcodecs`** | `AudioDecoder` exists and the container is MP4, FLAC or MP3 | non-fragmented MP4/M4A/MOV, native FLAC, MPEG audio. **No external binary, no WASM payload.** |
 | **`ffmpeg`** | Node, or anything the built-in path refuses | every other container/codec: Matroska, Ogg, fragmented MP4, AC-3, … |
 
 Selection is automatic. `opts.backend` forces one (`'webcodecs'` throws rather
@@ -139,8 +139,11 @@ Both skip cleanly when the corpus or ffmpeg is absent.
 
 ## Limitations
 
-- **Lossless cutting is MP4-only** and refuses fragmented input; the ffmpeg
-  fallback could re-encode instead, at a quality cost.
+- **Cutting covers MP4, FLAC and MP3.** MP4 and FLAC are genuinely lossless —
+  whole frames are dropped and the rest re-muxed untouched. MP3 is frame-spliced,
+  so the first frame after a cut can reference bit-reservoir bytes that are gone:
+  a few milliseconds, and inherent to cutting MP3 without re-encoding.
+  Fragmented MP4 is refused.
 - **No `elst` precision beyond the initial trim.** Cutting mid-file keeps the
   priming trim; cutting the head drops it. Sub-frame edit lists are not modelled.
 - **Non-fragmented MP4 only** for the built-in path; everything else falls back.
