@@ -62,6 +62,11 @@ export function computeChroma(samples, opts = {}) {
   const C = new Float32Array(nFrames * 12);
   const norms = new Float32Array(nFrames);
 
+  // Report a coarse fraction done. The STFT loop dominates, so the post-passes
+  // below are folded in at the end rather than metered separately.
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const tickEvery = Math.max(1, Math.floor(nFrames / 100));
+
   for (let t = 0; t < nFrames; t++) {
     const off = t * hop;
     for (let i = 0; i < nfft; i++) { re[i] = samples[off + i] * win[i]; im[i] = 0; }
@@ -76,6 +81,7 @@ export function computeChroma(samples, opts = {}) {
       e += m;
     }
     norms[t] = e;
+    if (onProgress && t % tickEvery === 0) onProgress(t / nFrames);
   }
 
   if (center) {
@@ -98,6 +104,7 @@ export function computeChroma(samples, opts = {}) {
     if (s > 0) for (let c = 0; c < 12; c++) C[base + c] /= s;
   }
 
+  onProgress?.(1);
   return { C, nFrames, frameRate: sampleRate / hop, duration: samples.length / sampleRate };
 }
 

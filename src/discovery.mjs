@@ -88,7 +88,11 @@ export function fingerprint(samples, opts = {}) {
   const hashTimes = new Map();
   let m2 = null, m1 = null, picked = 0, totalPairs = 0;
 
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const tickEvery = Math.max(1, Math.floor(nFrames / 100));
+
   for (let i = 0; i < nFrames + 1; i++) {
+    if (onProgress && i % tickEvery === 0) onProgress(i / (nFrames + 1));
     const m0 = i < nFrames ? frameMag(i) : null;
     const centre = i - 1;
 
@@ -140,6 +144,7 @@ export function fingerprint(samples, opts = {}) {
     m2 = m1; m1 = m0;
   }
 
+  onProgress?.(1);
   return {
     hashTimes,
     frameRate: sampleRate / hop,

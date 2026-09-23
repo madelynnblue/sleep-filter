@@ -67,6 +67,9 @@ export function computeFeatures(samples, opts = {}) {
   // largest source of churn in the pipeline.
   const magBuf = [new Float32Array(half + 1), new Float32Array(half + 1)];
 
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const tickEvery = Math.max(1, Math.floor(nFrames / 100));
+
   for (let t = 0; t < nFrames; t++) {
     const off = t * hop;
     let energy = 0;
@@ -100,6 +103,7 @@ export function computeFeatures(samples, opts = {}) {
       for (let k = 0; k <= half; k++) { d += Math.max(0, mag[k] - prevMag[k]); s += mag[k]; }
       flux[t] = s > 0 ? d / s : 0;
     }
+    if (onProgress && t % tickEvery === 0) onProgress(t / nFrames);
   }
 
   // --- 4 Hz modulation energy: the speech cue (Scheirer & Slaney) ---
@@ -176,6 +180,7 @@ export function computeFeatures(samples, opts = {}) {
     feats[o + 5] = chromaSelf[t];
   }
 
+  onProgress?.(1);
   return { feats, nFrames, frameRate: fps, duration: samples.length / sampleRate, logRms };
 }
 

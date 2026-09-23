@@ -44,6 +44,9 @@ select { background:var(--panel); color:var(--fg); border:1px solid var(--line);
 .files .st { text-align:right; color:var(--dim); }
 .files .st.done { color:var(--ok); }
 .files .st.error { color:var(--warn); }
+
+.progress { height:6px; margin:.9rem 0 0; background:var(--panel); border-radius:3px; overflow:hidden; }
+.progress > div { height:100%; width:0; background:var(--accent); transition:width .15s linear; }
 button.x { background:none; border:0; color:var(--dim); padding:0; line-height:1;
   font:inherit; font-weight:400; font-size:1rem; cursor:pointer; }
 button.x:hover { color:var(--warn); }

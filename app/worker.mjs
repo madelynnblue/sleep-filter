@@ -10,13 +10,32 @@
 
 import { analyzeOne } from './pipeline.mjs';
 
+/**
+ * Rate-limit progress messages.
+ *
+ * `onProgress` fires per chunk, and in the browser a chunk is a single AAC frame
+ * — about 21 ms of audio. A 22-minute episode therefore produces on the order of
+ * 60,000 callbacks, and every message rebuilds the file list on the main thread.
+ * Report on a 1% change instead, with a 100 ms floor so the meter still moves
+ * when progress stalls inside a stage.
+ */
+function throttleProgress(post) {
+  const STEP = 0.01, MIN_MS = 100;
+  let lastP = -1, lastT = -Infinity;
+  return (p) => {
+    if (p === null) return;
+    const now = performance.now();
+    if (p - lastP < STEP && now - lastT < MIN_MS) return;
+    lastP = p; lastT = now;
+    post(p);
+  };
+}
+
 self.onmessage = async (e) => {
   const { id, source } = e.data;
   try {
     const analysis = await analyzeOne(source, id, {
-      onProgress: (p) => {
-        if (p !== null) self.postMessage({ id, type: 'progress', progress: p });
-      },
+      onProgress: throttleProgress((p) => self.postMessage({ id, type: 'progress', progress: p })),
     });
 
     // Transfer rather than copy the big feature buffers. Deduplicated because

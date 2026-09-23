@@ -406,6 +406,34 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   ok('segments come out in time order', sorted);
 }
 
+/* ------------------------------------------------------------ progress -- */
+//
+// Progress used to report only the decode, which is ~30% of the work: the meter
+// reached 100% and then sat there while chroma, features and fingerprints ran.
+// The property worth defending is that it keeps MOVING through finish().
+{
+  const x = cat(musicSignal(30 * RATE), speechSignal(30 * RATE));
+  const a = new EpisodeAnalyzer({ id: 'progress' });
+  a.addChunk({
+    sampleRate: RATE, numberOfFrames: x.length, numberOfChannels: 1,
+    format: 'f32-planar', data: [x],
+  });
+  a.expectedFrames = x.length;
+
+  ok(`decode alone reports partial progress (${(a.progress * 100).toFixed(0)}%)`,
+     a.progress > 0.1 && a.progress < 0.5);
+
+  const seen = [];
+  a.finish({ onProgress: (p) => seen.push(p) });
+
+  ok(`progress is monotonic through finish() (${seen.length} updates)`,
+     seen.length > 5 && seen.every((p, i) => i === 0 || p >= seen[i - 1] - 1e-9));
+  ok('progress never exceeds 1', seen.every((p) => p <= 1 + 1e-9));
+  ok(`progress ends at 1 (${seen.at(-1)})`, Math.abs(seen.at(-1) - 1) < 1e-9);
+  ok(`progress advances through the feature stages (${seen.filter((p) => p > 0.35 && p < 0.95).length} updates between 35% and 95%)`,
+     seen.filter((p) => p > 0.35 && p < 0.95).length > 3);
+}
+
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

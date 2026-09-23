@@ -24,6 +24,17 @@ import { computeFeatures, calibrate, scoreFrames, segment, NFEAT } from './featu
 
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
 
+/**
+ * How the analysis time divides, measured on a 22-minute episode of the reference
+ * corpus: decode 1.73s, chroma 0.99s, features 2.51s, fingerprints 0.49s.
+ *
+ * Used only to weight the progress figure. The decode share is backend-dependent
+ * — WebCodecs decodes off the main thread, the ffmpeg fallback spawns a process —
+ * so this is approximate by design; the property that matters is that the meter
+ * keeps moving through finish(), which is 70% of the work.
+ */
+const STAGE_SHARE = { decode: 0.30, chroma: 0.17, features: 0.44, fingerprints: 0.09 };
+
 /** Mean frame level, in dB, over [from, to) seconds. Feature 0 is logRms. */
 const LOG_RMS = 0;
 function meanLevel(F, from, to) {
@@ -92,6 +103,8 @@ export class EpisodeAnalyzer {
     this._samples = new SampleBuffer();
     this._expectedFrames = 0;
     this._receivedFrames = 0;
+    // fraction done within each finish() stage, folded into `progress`
+    this._stage = { chroma: 0, fingerprints: 0, features: 0 };
   }
 
   /** Feed one AudioChunk (see audio.mjs for the shape). Returns samples added. */
@@ -128,16 +141,37 @@ export class EpisodeAnalyzer {
   }
 
   get duration() { return this._samples.length / this.targetSampleRate; }
-  /** 0..1, or null if expectedFrames was never set. */
+
+  /**
+   * Overall 0..1 across the WHOLE analysis, or null before expectedFrames is set.
+   *
+   * Reporting only the decode was actively misleading: decode is about 30% of the
+   * work, so the bar reached 100% and then sat there for the other 70% — chroma,
+   * features and fingerprints all happen inside finish(). Those shares are
+   * measured on a 22-minute episode of the reference corpus, and are baked in here
+   * rather than derived because finish() cannot know how long its own stages will
+   * take until they have run.
+   *
+   * The decode share differs between backends (WebCodecs decodes off-thread, the
+   * ffmpeg fallback spawns a process), so this is approximate on purpose. What it
+   * has to get right is not stalling at 100%.
+   */
   get progress() {
-    return this._expectedFrames ? Math.min(1, this._receivedFrames / this._expectedFrames) : null;
+    if (!this._expectedFrames) return null;
+    const decodeFrac = Math.min(1, this._receivedFrames / this._expectedFrames);
+    return Math.min(1,
+      STAGE_SHARE.decode * decodeFrac +
+      STAGE_SHARE.chroma * this._stage.chroma +
+      STAGE_SHARE.features * this._stage.features +
+      STAGE_SHARE.fingerprints * this._stage.fingerprints);
   }
   set expectedFrames(n) { this._expectedFrames = n; }
   get frames() { return this._samples.length; }
 
   /**
    * Compute features. Call once, after the last chunk.
-   * @param {{chroma?: boolean, fingerprints?: boolean, segments?: boolean}} [opts]
+   * @param {{chroma?: boolean, fingerprints?: boolean, segments?: boolean,
+   *          onProgress?: (overall: number) => void}} [opts]
    */
   finish(opts = {}) {
     const { chroma = true, fingerprints = true, segments = true } = opts;
@@ -150,9 +184,23 @@ export class EpisodeAnalyzer {
       duration: samples.length / sampleRate,
       frameCount: samples.length,
     };
-    if (chroma) out.chroma = computeChroma(samples, { sampleRate });
-    if (fingerprints) out.fingerprints = fingerprint(samples, { sampleRate });
-    if (segments) out.features = computeFeatures(samples, { sampleRate });
+
+    // Each stage reports its own 0..1, which `progress` weights into the overall
+    // figure. Decode is already done by the time finish() runs.
+    const run = (stage, fn) => {
+      this._stage[stage] = 0;
+      const value = fn((frac) => {
+        this._stage[stage] = frac;
+        opts.onProgress?.(this.progress);
+      });
+      this._stage[stage] = 1;
+      opts.onProgress?.(this.progress);
+      return value;
+    };
+
+    if (chroma) out.chroma = run('chroma', (p) => computeChroma(samples, { sampleRate, onProgress: p }));
+    if (fingerprints) out.fingerprints = run('fingerprints', (p) => fingerprint(samples, { sampleRate, onProgress: p }));
+    if (segments) out.features = run('features', (p) => computeFeatures(samples, { sampleRate, onProgress: p }));
     return out;
   }
 }

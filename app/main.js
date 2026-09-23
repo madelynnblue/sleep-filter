@@ -105,6 +105,27 @@ function renderFiles() {
   for (const el of $('filelist').querySelectorAll('button.x')) {
     el.onclick = () => removeFile(el.dataset.id);
   }
+  renderProgress();
+}
+
+/**
+ * Overall analysis progress.
+ *
+ * Weighted by file SIZE rather than by file count: the work is proportional to
+ * duration, and these are same-codec files, so size is a good proxy — a plain
+ * mean would let a short file finish and jump the bar by a whole 1/N. Errors
+ * count as complete so the bar can still reach the end.
+ */
+function renderProgress() {
+  const files = state.files;
+  const el = $('progress');
+  el.hidden = !files.some((f) => f.status === 'queued' || f.status === 'running');
+  if (el.hidden) return;
+
+  const total = files.reduce((s, f) => s + f.file.size, 0) || 1;
+  const done = files.reduce((s, f) =>
+    s + f.file.size * ((f.status === 'done' || f.status === 'error') ? 1 : (f.progress ?? 0)), 0);
+  $('progressBar').style.width = `${((done / total) * 100).toFixed(1)}%`;
 }
 
 /**
