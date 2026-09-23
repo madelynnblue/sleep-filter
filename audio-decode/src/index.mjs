@@ -21,7 +21,7 @@ import { decodeMp4WithWebCodecs } from './webcodecs.mjs';
 import { readSource, writeTempFile } from './source.mjs';
 
 export { sniffContainer, MP4_EXTENSIONS } from './container.mjs';
-export { demuxMp4, parseAudioSpecificConfig } from './mp4.mjs';
+export { demuxMp4, parseAudioSpecificConfig, readTags, readTagsFromMoov } from './mp4.mjs';
 export { decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
 export { readSource } from './source.mjs';
 export { muxAudioMp4 } from './mux.mjs';

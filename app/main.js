@@ -12,7 +12,7 @@
  */
 
 import {
-  discoverAssets, musicRangesFor, extractClipWav, exampleRegion, renderCut,
+  discoverAssets, musicRangesFor, extractClipWav, exampleRegion, renderCut, readTitleTag,
 } from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -30,6 +30,11 @@ const state = {
 };
 
 const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
+
+// Titles are read out of the file itself, so they are untrusted text: without
+// this a stray < or & in a tag would break the row it is rendered into.
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const hasWebCodecs = typeof globalThis.AudioDecoder === 'function';
 const hasFS = typeof window.showDirectoryPicker === 'function';
 
@@ -56,11 +61,30 @@ function addFiles(files) {
   for (const f of files) {
     const id = (f.name.match(/S\d+E\d+/) || [f.name.replace(/\.[^.]+$/, '')])[0];
     if (state.files.some((x) => x.id === id)) continue;
-    state.files.push({ id, file: f, status: 'queued', progress: 0 });
+    const entry = { id, file: f, status: 'queued', progress: 0, title: null };
+    state.files.push(entry);
     added++;
+    loadTitle(entry);
   }
   renderFiles();
   if (added) autoRun();
+}
+
+/**
+ * Read the file's own title tag, in the background.
+ *
+ * Only the `moov` box is read — a few hundred KB rather than the whole episode —
+ * so this neither blocks analysis nor holds a second copy of the audio. A file
+ * with no tags simply keeps showing its id.
+ */
+async function loadTitle(entry) {
+  try {
+    const title = await readTitleTag(entry.file);
+    if (title && entry.title !== title) {
+      entry.title = title;
+      renderFiles();
+    }
+  } catch { /* unreadable tags are not worth surfacing */ }
 }
 
 function renderFiles() {
@@ -70,11 +94,12 @@ function renderFiles() {
       : f.status === 'error' ? `error: ${f.error}`
       : 'queued';
     return `<li>${playButton(`ep:${f.id}`, 'Play this episode')}` +
-           `<span class="id">${f.id}</span>` +
+           `<span class="id">${esc(f.id)}` +
+           (f.title ? `<span class="tag">${esc(f.title)}</span>` : '') + `</span>` +
            `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
-           `<span class="st ${f.status}">${label}</span>` +
-           `<button class="x" type="button" data-id="${f.id}" ` +
-           `title="Remove this file" aria-label="Remove ${f.id}">×</button></li>`;
+           `<span class="st ${f.status}">${esc(label)}</span>` +
+           `<button class="x" type="button" data-id="${esc(f.id)}" ` +
+           `title="Remove this file" aria-label="Remove ${esc(f.id)}">×</button></li>`;
   }).join('');
   wirePlayButtons($('filelist'));
   for (const el of $('filelist').querySelectorAll('button.x')) {

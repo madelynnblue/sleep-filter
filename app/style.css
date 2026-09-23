@@ -40,6 +40,7 @@ select { background:var(--panel); color:var(--fg); border:1px solid var(--line);
 .files li { display:grid; grid-template-columns:2.2rem 1fr 6rem 9rem 1.6rem; gap:.75rem;
   align-items:center; padding:.4rem .6rem; border-bottom:1px solid var(--line); font-size:.87rem; }
 .files .sz { color:var(--dim); text-align:right; }
+.files .tag { color:var(--dim); margin-left:.6rem; }
 .files .st { text-align:right; color:var(--dim); }
 .files .st.done { color:var(--ok); }
 .files .st.error { color:var(--warn); }

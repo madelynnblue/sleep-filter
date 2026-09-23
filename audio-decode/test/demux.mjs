@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { homedir } from 'node:os';
-import { demuxMp4 } from '../src/mp4.mjs';
+import { demuxMp4, readTags } from '../src/mp4.mjs';
 import { sniffContainer } from '../src/container.mjs';
 
 const DIR = process.argv[2]?.startsWith('--') ? null : process.argv[2]
@@ -105,6 +105,31 @@ for (const file of files) {
 
   // the first sample should start at 0 (AAC priming aside)
   ok(`  first timestamp is 0`, d.samples[0].timestampUs === 0, String(d.samples[0].timestampUs));
+  console.log('');
+}
+
+/* --------------------------------------------------------------- tags -- */
+
+console.log('tags (udta/meta/ilst):');
+{
+  // The page shows a file's own title in the list, and the demuxer's udta copy
+  // is what the cutter carries through — so the reader has to agree with the
+  // atom ffprobe reports.
+  const path = join(DIR, files[0]);
+  const bytes = new Uint8Array(readFileSync(path));
+  const tags = readTags(bytes);
+
+  const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format_tags=title',
+    '-of', 'default=nw=1:nk=1', path], { encoding: 'utf8' });
+  const expected = (probe.stdout ?? '').trim();
+
+  ok(`  title parsed (${JSON.stringify(tags['©nam'])})`, typeof tags['©nam'] === 'string' && !!tags['©nam']);
+  ok('  agrees with ffprobe', !expected || tags['©nam'] === expected, `ffprobe: ${JSON.stringify(expected)}`);
+  ok('  binary atoms are skipped, not misread as text',
+     !('trkn' in tags) && !('disk' in tags) && !('covr' in tags));
+  ok('  no NUL padding leaks into values',
+     Object.values(tags).every((v) => typeof v === 'string' && !v.includes('\u0000')));
+  ok('  garbage yields no tags', Object.keys(readTags(new Uint8Array(32))).length === 0);
   console.log('');
 }
 

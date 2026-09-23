@@ -11,7 +11,51 @@
  */
 
 import { EpisodeAnalyzer, Library, segmentEpisode } from '../src/index.mjs';
-import { openAudioFile, cutAudio, rangesFromSegments } from '../audio-decode/src/index.mjs';
+import {
+  openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov,
+} from '../audio-decode/src/index.mjs';
+
+/**
+ * Find the `moov` box by walking top-level headers only.
+ *
+ * A Blob is read through `slice`, so this touches a few hundred bytes rather
+ * than the whole episode — and it has to walk at all because `moov` sits at the
+ * END of these files, behind a 16 MB mdat.
+ *
+ * @returns {Promise<{start: number, end: number}|null>}
+ */
+async function findMoovBox(source) {
+  let pos = 0;
+  while (pos + 8 <= source.size) {
+    const head = new Uint8Array(
+      await source.slice(pos, Math.min(pos + 16, source.size)).arrayBuffer());
+    if (head.length < 8) return null;
+
+    const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    let size = dv.getUint32(0);
+    const type = String.fromCharCode(head[4], head[5], head[6], head[7]);
+    let header = 8;
+    if (size === 1) {                       // 64-bit size
+      if (head.length < 16) return null;
+      size = Number(dv.getBigUint64(8));
+      header = 16;
+    } else if (size === 0) {                // extends to end of file
+      size = source.size - pos;
+    }
+    if (size < header || pos + size > source.size) return null;
+    if (type === 'moov') return { start: pos, end: pos + size };
+    pos += size;
+  }
+  return null;
+}
+
+/** The file's own title tag, or null when it carries none. */
+export async function readTitleTag(source) {
+  const moov = await findMoovBox(source);
+  if (!moov) return null;
+  const bytes = new Uint8Array(await source.slice(moov.start, moov.end).arrayBuffer());
+  return readTagsFromMoov(bytes)['©nam'] ?? null;
+}
 
 /**
  * Decode and analyse one file. Phase 1 — heavy, and the unit of work for a

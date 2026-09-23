@@ -57,6 +57,48 @@ function findPath(buf, start, end, path) {
   return box;
 }
 
+/* -------------------------------------------------------------- tags -- */
+
+const UTF8 = new TextDecoder('utf-8');
+const UTF16BE = new TextDecoder('utf-16be');
+
+/**
+ * Read the iTunes-style tag list out of a standalone `moov` box.
+ *
+ * Handles the text atoms — ©nam, ©ART, ©alb, ©day, ©cmt, ©gen, ©too and the
+ * like. Binary atoms (trkn, disk, covr) are skipped: they need typed decoding,
+ * and nothing here reads them.
+ *
+ * @param {Uint8Array} moov  the whole `moov` box, header included
+ * @returns {Record<string, string>} fourcc -> value, e.g. { '©nam': 'Pilot' }
+ */
+export function readTagsFromMoov(moov) {
+  const head = findBox(moov, 0, moov.length, 'moov');
+  const udta = head && findBox(moov, head.payload, head.end, 'udta');
+  const meta = udta && findBox(moov, udta.payload, udta.end, 'meta');
+  // meta is a full box, so its children start after 4 bytes of version/flags
+  const ilst = meta && findBox(moov, meta.payload + 4, meta.end, 'ilst');
+  if (!ilst) return {};
+
+  const out = {};
+  for (const tag of boxes(moov, ilst.payload, ilst.end)) {
+    const data = findBox(moov, tag.payload, tag.end, 'data');
+    if (!data || data.payload + 8 > data.end) continue;
+    const kind = u32(moov, data.payload);           // 1 utf8, 2 utf16, 21 int
+    const body = moov.subarray(data.payload + 8, data.end);   // skip type + locale
+    if (kind === 1) out[tag.type] = UTF8.decode(body);
+    else if (kind === 2) out[tag.type] = UTF16BE.decode(body);
+    else if (kind === 21 && body.length >= 4) out[tag.type] = String(u32(moov, data.payload + 8));
+  }
+  return out;
+}
+
+/** Convenience for a complete file: locate `moov`, then read its tags. */
+export function readTags(bytes) {
+  const moov = findBox(bytes, 0, bytes.length, 'moov');
+  return moov ? readTagsFromMoov(bytes.subarray(moov.start, moov.end)) : {};
+}
+
 /** Big-endian bit reader, for AudioSpecificConfig. */
 class Bits {
   constructor(bytes, byteOffset = 0) { this.b = bytes; this.p = byteOffset * 8; }
