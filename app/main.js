@@ -24,6 +24,8 @@ const state = {
   shown: [],          // the top N actually displayed
   selected: new Set(),// indices into `shown` that the user wants removed
   previews: new Map(),// clip index -> { url, loading }
+  music: [],          // [{ id, segments, enabled:Set<index> }]
+  collapsed: new Set(),
   outDir: null,
 };
 
@@ -174,7 +176,8 @@ async function runDetection() {
 
   renderClips();
   renderMatrix();
-  renderMusicNote();
+  computeMusic();
+  renderMusic();
   $('verify').hidden = false;
   $('done').hidden = true;
 
@@ -223,7 +226,10 @@ function renderClips() {
       const i = Number(el.dataset.i);
       if (el.checked) state.selected.add(i); else state.selected.delete(i);
       renderMatrix();
-      renderMusicNote();
+      // the ticked clips are the calibration exemplars, so the proposed
+      // segments change with them
+      computeMusic();
+      renderMusic();
     };
   });
   $('clips').querySelectorAll('.play').forEach((el) => {
@@ -302,29 +308,100 @@ function calibrationExemplars() {
   return state.assets.slice(0, 3);
 }
 
-function renderMusicNote() {
+// Settings re-run detection. Phase 1 is skipped when nothing is pending, so this
+// costs nothing — the analyses are already in memory.
+$('featThemes').onchange = () => autoRun();
+$('featMusic').onchange = () => autoRun();
+$('topN').onchange = () => autoRun();
+
+/**
+ * Propose per-episode music segments. Everything is enabled by default — the
+ * user unticks what they want to keep, rather than hunting for what to remove.
+ */
+function computeMusic() {
+  if (!$('featMusic').checked) { state.music = []; return; }
+  const ex = calibrationExemplars();
+  if (!ex.length) { state.music = []; return; }
+  state.music = musicRangesFor(state.library, ex, {}).map((r) => ({
+    id: r.id,
+    segments: r.segments,
+    enabled: new Set(r.segments.map((_, i) => i)),
+    error: r.error,
+  }));
+}
+
+function renderMusic() {
+  const note = $('musicNote');
+  const el = $('music');
+
   if (!$('featMusic').checked) {
-    $('musicNote').textContent = 'General music removal is off.';
+    note.textContent = 'General music removal is off.';
+    el.innerHTML = '';
     return;
   }
   const ex = calibrationExemplars();
-  if (!ex.length) {
-    $('musicNote').textContent =
-      'General music needs at least one music example to calibrate on, and none was found.';
-    return;
-  }
   const picked = [...state.selected].length > 0;
-  $('musicNote').textContent =
-    `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
-    'Music detected inside each episode will also be removed. ' +
-    'This stage is assistive — it runs close to its decision boundary, so review the output.';
+  note.textContent = ex.length
+    ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
+      'Untick anything you want to keep. This stage is assistive — it runs close to its decision ' +
+      'boundary, so some segments may be wrong.'
+    : 'General music needs at least one music example to calibrate on, and none was found.';
+
+  if (!state.music.length) { el.innerHTML = ''; return; }
+
+  const head = '<thead><tr><th class="pick"></th><th>episode</th><th>segments</th><th>removing</th></tr></thead>';
+  let rows = '';
+
+  for (const ep of state.music) {
+    const total = ep.segments.length;
+    const on = ep.enabled.size;
+    const secs = ep.segments.reduce((n, s, i) => n + (ep.enabled.has(i) ? s.duration : 0), 0);
+    const collapsed = state.collapsed.has(ep.id);
+
+    rows += `<tr class="ep${total ? '' : ' empty'}">` +
+      `<td class="pick"><input type="checkbox" class="epPick" data-id="${ep.id}" ` +
+        `${total && on === total ? 'checked' : ''} ${total ? '' : 'disabled'}></td>` +
+      `<td><button class="twisty" data-id="${ep.id}" ${total ? '' : 'disabled'}>` +
+        `${total ? (collapsed ? '▸' : '▾') : '·'}</button>${ep.id}</td>` +
+      `<td>${total || (ep.error ? 'failed' : 'none')}</td>` +
+      `<td>${total ? `${secs.toFixed(0)}s` : '—'}</td></tr>`;
+
+    if (!collapsed && total) {
+      ep.segments.forEach((s, i) => {
+        rows += `<tr class="seg"><td class="pick">` +
+          `<input type="checkbox" class="segPick" data-id="${ep.id}" data-i="${i}" ` +
+          `${ep.enabled.has(i) ? 'checked' : ''}></td>` +
+          `<td colspan="3">${fmtTime(s.start)} – ${fmtTime(s.end)}` +
+          ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
+      });
+    }
+  }
+
+  el.innerHTML = head + `<tbody>${rows}</tbody>`;
+
+  el.querySelectorAll('.segPick').forEach((box) => {
+    box.onchange = () => {
+      const ep = state.music.find((x) => x.id === box.dataset.id);
+      const i = Number(box.dataset.i);
+      if (box.checked) ep.enabled.add(i); else ep.enabled.delete(i);
+      renderMusic();
+    };
+  });
+  el.querySelectorAll('.epPick').forEach((box) => {
+    box.onchange = () => {
+      const ep = state.music.find((x) => x.id === box.dataset.id);
+      ep.enabled = box.checked ? new Set(ep.segments.map((_, i) => i)) : new Set();
+      renderMusic();
+    };
+  });
+  el.querySelectorAll('.twisty').forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.id;
+      if (state.collapsed.has(id)) state.collapsed.delete(id); else state.collapsed.add(id);
+      renderMusic();
+    };
+  });
 }
-
-$('featMusic').onchange = () => autoRun();
-$('featThemes').onchange = () => autoRun();
-$('topN').onchange = () => autoRun();
-
-/* ---------------------------------------------------------- export -- */
 
 // The export button's ellipsis already implies a picker where one exists. The
 // hint is worth showing only when files will download instead, which is worth
@@ -355,10 +432,13 @@ $('export').onclick = async () => {
       }
     }
     if (wantMusic) {
-      // calibration may use unselected assets; only ticked clips contribute
-      // their own ranges, so an unticked clip is never removed.
-      for (const r of musicRangesFor(state.library, calibrationExemplars(), {})) {
-        for (const [a, b] of r.ranges) add(r.id, a, b);
+      // Only ENABLED segments are cut — an unticked segment is kept, even though
+      // the calibration may still have used unselected assets as exemplars.
+      for (const ep of state.music) {
+        for (const i of ep.enabled) {
+          const s = ep.segments[i];
+          if (s) add(ep.id, s.start, s.end);
+        }
       }
     }
 
