@@ -61,7 +61,11 @@ export function computeFeatures(samples, opts = {}) {
   const lowRatio = new Float32Array(nFrames);
   const flatness = new Float32Array(nFrames);
   const flux = new Float32Array(nFrames);
-  let prevMag = null;
+  // Two magnitude buffers selected by frame parity, so the flux comparison can
+  // see the previous frame without allocating. One per frame was ~4 KB x ~21k
+  // frames — about 87 MB of garbage for a single 22-minute episode, and the
+  // largest source of churn in the pipeline.
+  const magBuf = [new Float32Array(half + 1), new Float32Array(half + 1)];
 
   for (let t = 0; t < nFrames; t++) {
     const off = t * hop;
@@ -76,7 +80,8 @@ export function computeFeatures(samples, opts = {}) {
     fftInPlace(re, im, FT);
 
     let low = 0, tot = 0, logSum = 0;
-    const mag = new Float32Array(half + 1);
+    const mag = magBuf[t & 1];
+    const prevMag = t > 0 ? magBuf[(t - 1) & 1] : null;
     for (let k = 0; k <= half; k++) {
       const p = re[k] * re[k] + im[k] * im[k];
       mag[k] = Math.sqrt(p);
@@ -95,7 +100,6 @@ export function computeFeatures(samples, opts = {}) {
       for (let k = 0; k <= half; k++) { d += Math.max(0, mag[k] - prevMag[k]); s += mag[k]; }
       flux[t] = s > 0 ? d / s : 0;
     }
-    prevMag = mag;
   }
 
   // --- 4 Hz modulation energy: the speech cue (Scheirer & Slaney) ---
@@ -253,8 +257,11 @@ export function segment(scores, fps, opts = {}) {
   const buf = new Float64Array(k);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < k; j++) buf[j] = scores[Math.min(Math.max(i - halfK + j, 0), n - 1)];
-    const sorted = Array.from(buf).sort((a, b) => a - b);
-    med[i] = sorted[halfK];
+    // TypedArray.sort() is numeric and in-place: no per-frame Array, no
+    // comparator. Array.from(buf).sort(compare) allocated and sorted a fresh
+    // array for every one of the ~21k frames, and measured 8.8x slower.
+    buf.sort();
+    med[i] = buf[halfK];
   }
   // then a short moving average
   const sm = new Float32Array(n);
@@ -289,7 +296,10 @@ export function segment(scores, fps, opts = {}) {
   for (const r of merged) {
     if ((r.b - r.a + 1) / fps < minDuration) continue;
     // refine edges to the crossing points at a fraction of the threshold
-    const peak = Math.max(...sm.subarray(r.a, r.b + 1));
+    // (a plain loop: spreading a run into Math.max allocates a subarray view and
+    // overflows the stack on the long runs a smeared occurrence can produce)
+    let peak = -Infinity;
+    for (let i = r.a; i <= r.b; i++) if (sm[i] > peak) peak = sm[i];
     if (peak < minPeak) continue;
     const edge = thr - edgeFrac * (peak - thr);
     let a = r.a, b = r.b;

@@ -183,9 +183,26 @@ function setStatus(text, isError = false) {
 
 /* ------------------------------------------------------- worker pool -- */
 
+// How many episodes to analyse at once. Cores bound it because the work is
+// CPU-bound; memory bounds it because each worker holds a whole episode — its
+// decoded mono PCM (~42 MB for 22 minutes), the source bytes (~16 MB) and the
+// feature pass. The previous fixed cap of 4 was unexplained and left half of an
+// 8- or 10-core machine idle.
+const WORKER_CEILING = 8;      // past this the main thread starts competing
+const PER_WORKER_MB = 300;     // working estimate, not the live set
+
+function workerLimit(pending) {
+  const cores = navigator.hardwareConcurrency || 4;
+  // deviceMemory is coarse, Chrome-only and capped at 8 GiB. Where it is absent
+  // the budget is unbounded and cores alone decide.
+  const gb = navigator.deviceMemory;
+  const byMemory = gb ? Math.max(1, Math.floor((gb * 1024 * 0.4) / PER_WORKER_MB)) : Infinity;
+  return Math.max(1, Math.min(cores, byMemory, WORKER_CEILING, pending));
+}
+
 async function analyzePool() {
   const pending = pendingFiles();
-  const limit = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 4, pending.length));
+  const limit = workerLimit(pending.length);
   // stale results for the same ids would corrupt discovery
   state.analyses = state.analyses.filter((a) => !pending.some((f) => f.id === a.id));
   let next = 0;
