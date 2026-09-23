@@ -156,7 +156,12 @@ export function computeFeatures(samples, opts = {}) {
     const envs = [];
     const decim = Math.max(1, Math.round(sampleRate / ENV_HZ));
     const smoothN = Math.max(1, Math.round(0.02 * sampleRate));
-    for (const [lo, hi] of bandDefs) {
+    // The per-band filter passes are the bulk of this block. Reporting only at
+    // its end meant one guessed share covered all of it, which is what made the
+    // bar jump from ~90% to 100% in one step.
+    const span = MOD_SHARE - LOOP_SHARE;
+    for (const [bi, band] of bandDefs.entries()) {
+      const [lo, hi] = band;
       const f0 = Math.sqrt(lo * hi);
       const c = biquadBandpass(sampleRate, f0, Math.max(0.5, f0 / (hi - lo)));
       const y = applyBiquad(samples, c);
@@ -165,6 +170,7 @@ export function computeFeatures(samples, opts = {}) {
       const e = new Float32Array(n);
       for (let i = 0; i < n; i++) e[i] = sm[i * decim];
       envs.push(e);
+      report?.(LOOP_SHARE + span * 0.85 * ((bi + 1) / bandDefs.length));
     }
     const nEnv = envs[0].length;
     const bp = biquadBandpass(ENV_HZ, 4.5, 1.2);   // passband ~3-6 Hz
@@ -202,6 +208,7 @@ export function computeFeatures(samples, opts = {}) {
       if (s > best) best = s;
     }
     chromaSelf[t] = best;
+    if (report && t % tickEvery === 0) report(MOD_SHARE + (1 - MOD_SHARE) * (t / nFrames));
   }
 
   const feats = new Float32Array(nFrames * NFEAT);

@@ -25,6 +25,7 @@ const state = {
   selected: new Set(),// indices into `shown` that the user wants removed
   previews: new Map(),// play key -> { url, audio } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
+  shares: null,       // stage weights for the progress meter, learned at runtime
   collapsed: new Set(),
   outDir: null,
 };
@@ -204,6 +205,26 @@ function setStatus(text, isError = false) {
 
 /* ------------------------------------------------------- worker pool -- */
 
+/**
+ * Learn how the analysis time actually divides, from a file that just finished.
+ *
+ * The decode share is nothing like the same across backends: WebCodecs hands
+ * back one frame at a time on another thread while the ffmpeg fallback spawns a
+ * process, and the JS resampling sits in between. Hardcoding the figure measured
+ * on one of them made the meter crawl through the first stage on the other. Each
+ * finished file reports its own per-stage times; the next workers get weighted by
+ * those instead.
+ */
+function learnShares(timings) {
+  if (!timings) return;
+  const stages = ['decode', 'chroma', 'fingerprints', 'features'];
+  const total = stages.reduce((s, k) => s + (timings[k] > 0 ? timings[k] : 0), 0);
+  if (!(total > 0)) return;                 // nothing measured: keep what we have
+  const next = {};
+  for (const k of stages) next[k] = (timings[k] > 0 ? timings[k] : 0) / total;
+  state.shares = next;
+}
+
 // How many episodes to analyse at once. Cores bound it because the work is
 // CPU-bound; memory bounds it because each worker holds a whole episode — its
 // decoded mono PCM (~42 MB for 22 minutes), the source bytes (~16 MB) and the
@@ -237,7 +258,11 @@ async function analyzePool() {
       worker.onmessage = (e) => {
         const m = e.data;
         if (m.type === 'progress') { entry.progress = m.progress ?? 0; renderFiles(); }
-        else if (m.type === 'done') { entry.status = 'done'; entry.progress = 1; finish(m.analysis); }
+        else if (m.type === 'done') {
+          entry.status = 'done'; entry.progress = 1;
+          learnShares(m.analysis?.timings);
+          finish(m.analysis);
+        }
         else if (m.type === 'error') { entry.status = 'error'; entry.error = m.message; finish(null); }
       };
       worker.onerror = (err) => {
@@ -245,7 +270,7 @@ async function analyzePool() {
         entry.error = err.message ?? 'worker failed';
         finish(null);
       };
-      worker.postMessage({ id: entry.id, source: entry.file });
+      worker.postMessage({ id: entry.id, source: entry.file, shares: state.shares ?? undefined });
     });
   }
 

@@ -32,9 +32,10 @@ function throttleProgress(post) {
 }
 
 self.onmessage = async (e) => {
-  const { id, source } = e.data;
+  const { id, source, shares } = e.data;
   try {
     const analysis = await analyzeOne(source, id, {
+      shares,
       onProgress: throttleProgress((p) => self.postMessage({ id, type: 'progress', progress: p })),
     });
 

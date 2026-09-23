@@ -99,12 +99,18 @@ export class EpisodeAnalyzer {
    * @param {number} [opts.targetSampleRate=8000]
    * @param {number} [opts.inputSampleRate]  inferred from the first chunk if omitted
    * @param {number} [opts.inputChannels]    inferred from the first chunk if omitted
+   * @param {object} [opts.shares]  stage weights for `progress`. Defaults to the
+   *        shares measured on the reference corpus, but the decode share is
+   *        backend-dependent, so callers that can measure their own (the page
+   *        does) should pass those instead.
    */
   constructor(opts = {}) {
     this.id = opts.id ?? 'episode-1';
     this.targetSampleRate = opts.targetSampleRate ?? DEFAULT_SAMPLE_RATE;
     this.inputSampleRate = opts.inputSampleRate ?? null;
     this.inputChannels = opts.inputChannels ?? null;
+    this.shares = opts.shares ?? STAGE_SHARE;
+    this.timings = {};             // ms spent per stage, filled in as they run
     this._resampler = null;
     this._samples = new SampleBuffer();
     this._expectedFrames = 0;
@@ -174,11 +180,12 @@ export class EpisodeAnalyzer {
     const decodeFrac = this._decodeDone
       ? 1
       : Math.min(1, this._receivedFrames / this._expectedFrames);
+    const w = this.shares;
     return Math.min(1,
-      STAGE_SHARE.decode * decodeFrac +
-      STAGE_SHARE.chroma * this._stage.chroma +
-      STAGE_SHARE.features * this._stage.features +
-      STAGE_SHARE.fingerprints * this._stage.fingerprints);
+      (w.decode ?? 0) * decodeFrac +
+      (w.chroma ?? 0) * this._stage.chroma +
+      (w.features ?? 0) * this._stage.features +
+      (w.fingerprints ?? 0) * this._stage.fingerprints);
   }
   set expectedFrames(n) { this._expectedFrames = n; }
   get frames() { return this._samples.length; }
@@ -205,10 +212,12 @@ export class EpisodeAnalyzer {
     // figure. Decode is already done by the time finish() runs.
     const run = (stage, fn) => {
       this._stage[stage] = 0;
+      const t0 = performance.now();
       const value = fn((frac) => {
         this._stage[stage] = frac;
         opts.onProgress?.(this.progress);
       });
+      this.timings[stage] = performance.now() - t0;
       this._stage[stage] = 1;
       opts.onProgress?.(this.progress);
       return value;

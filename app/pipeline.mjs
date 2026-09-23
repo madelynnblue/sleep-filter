@@ -62,7 +62,8 @@ export async function readTitleTag(source) {
  * worker in the browser.
  */
 export async function analyzeOne(source, id, opts = {}) {
-  const analyzer = new EpisodeAnalyzer({ id });
+  const analyzer = new EpisodeAnalyzer({ id, shares: opts.shares });
+  const t0 = performance.now();
   const { info, chunks, backend } = await openAudioFile(source, opts.decode);
   if (info?.duration) analyzer.expectedFrames = Math.round(info.duration * analyzer.targetSampleRate);
 
@@ -70,10 +71,15 @@ export async function analyzeOne(source, id, opts = {}) {
     analyzer.addChunk(chunk);
     opts.onProgress?.(analyzer.progress);
   }
-  // finish() must be given onProgress too: decode is only ~30% of the work, so
-  // without this the meter stops at 30% and jumps to 100 when the worker's
-  // 'done' message lands.
+  // finish() must be given onProgress too: decode is only part of the work, so
+  // without this the meter stops at the decode share and jumps to 100 when the
+  // worker's 'done' message lands.
   const analysis = analyzer.finish({ onProgress: opts.onProgress });
+  // Reading, demuxing and decoding. Reported so the caller can learn what the
+  // decode share actually is on this backend rather than trusting a figure
+  // measured elsewhere — WebCodecs and ffmpeg are nothing alike here.
+  analyzer.timings.decode = performance.now() - t0;
+  analysis.timings = analyzer.timings;
   analysis.info = info;
   analysis.backend = backend;
   return analysis;
