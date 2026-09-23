@@ -381,6 +381,31 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
      segment(small, FPS, { mid: 0 }).length === 1);
 }
 
+/* --------------------------------------- music segments must not overlap -- */
+//
+// Edge refinement walks while the smoothed score is above `edge`, which is
+// deliberately BELOW the detection threshold. When a gap dips under `thr` but
+// not under `edge`, both neighbouring runs satisfy that walk and grow through
+// each other. Measured on the real corpus before this was bounded: two S02E01
+// segments overlapped by 36.4 seconds.
+{
+  const FPS = 15.625;
+  const scores = new Float32Array(6000).fill(-1);   // 384s episode
+  for (let i = 1000; i < 1200; i++) scores[i] = 1;
+  for (let i = 1200; i < 1240; i++) scores[i] = 0.45;   // under thr, above edge
+  for (let i = 1240; i < 1440; i++) scores[i] = 1;
+
+  const segs = segment(scores, FPS, { mid: 0.5 });
+  ok(`two cues separated by a shallow gap are both found (${segs.length})`, segs.length === 2);
+
+  let worst = 0;
+  for (let i = 1; i < segs.length; i++) worst = Math.max(worst, segs[i - 1].end - segs[i].start);
+  ok(`and they do not overlap each other (worst ${worst.toFixed(2)}s)`, worst <= 0);
+
+  const sorted = segs.every((s, i) => i === 0 || s.start >= segs[i - 1].start);
+  ok('segments come out in time order', sorted);
+}
+
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

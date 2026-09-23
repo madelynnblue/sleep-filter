@@ -156,5 +156,19 @@ const themeHits = segOut.filter((r) => {
 ok(`segmentation covers the theme in ${themeHits}/${segOut.length} episodes`,
    themeHits >= Math.floor(segOut.length * 0.7));
 
+// Segments become cut ranges. Overlap is not cosmetic: the same audio is
+// proposed twice and the boundaries cannot be trusted.
+{
+  let worst = 0, where = '';
+  for (const r of segOut) {
+    for (let i = 1; i < r.segments.length; i++) {
+      const ov = r.segments[i - 1].end - r.segments[i].start;
+      if (ov > worst) { worst = ov; where = r.id; }
+    }
+  }
+  ok(`music segments never overlap (worst ${worst.toFixed(2)}s${where ? ` in ${where}` : ''})`,
+     worst <= 0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

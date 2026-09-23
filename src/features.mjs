@@ -301,7 +301,8 @@ export function segment(scores, fps, opts = {}) {
   }
 
   const out = [];
-  for (const r of merged) {
+  for (let ri = 0; ri < merged.length; ri++) {
+    const r = merged[ri];
     if ((r.b - r.a + 1) / fps < minDuration) continue;
     // refine edges to the crossing points at a fraction of the threshold
     // (a plain loop: spreading a run into Math.max allocates a subarray view and
@@ -310,9 +311,21 @@ export function segment(scores, fps, opts = {}) {
     for (let i = r.a; i <= r.b; i++) if (sm[i] > peak) peak = sm[i];
     if (peak < minPeak) continue;
     const edge = thr - edgeFrac * (peak - thr);
+    // Bound each edge at the midpoint of the gap to its neighbour.
+    //
+    // `edge` is deliberately BELOW the detection threshold, so when a gap dips
+    // under `thr` without dropping under `edge`, BOTH neighbouring runs satisfy
+    // the walk condition and grow through each other — measured on this corpus,
+    // two S02E01 segments overlapped by 36.4s. The midpoint keeps every run at
+    // least its detected extent (the original bounds always sit inside their own
+    // half) while making overlap impossible regardless of which runs survive the
+    // filters below.
+    const prev = merged[ri - 1], next = merged[ri + 1];
+    const lo = prev ? ((prev.b + r.a) >> 1) + 1 : 0;
+    const hi = next ? ((r.b + next.a) >> 1) : n - 1;
     let a = r.a, b = r.b;
-    while (a > 0 && sm[a - 1] > edge) a--;
-    while (b < n - 1 && sm[b + 1] > edge) b++;
+    while (a > lo && sm[a - 1] > edge) a--;
+    while (b < hi && sm[b + 1] > edge) b++;
     // Checked after edge refinement, since the refined extent is what gets cut.
     if ((b + 1 - a) / fps > maxFractionOfEpisode * (n / fps)) continue;
     out.push({
