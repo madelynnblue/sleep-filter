@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remove music from episodes</title>
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{
+  "imports": {
+    "music-analysis": "../src/index.mjs",
+    "audio-decode": "../audio-decode/src/index.mjs"
+  }
+}
+</script>
+</head>
+<body>
+
+<header>
+  <h1>Remove music from episodes</h1>
+  <p class="sub">
+    Finds music that plays on its own — themes, credits, interludes, songs — and cuts it out.
+    Music <em>under</em> dialogue is left in place by design.
+    Nothing is uploaded: decoding and analysis both run in this tab.
+  </p>
+</header>
+
+<section id="step1">
+  <div id="drop" class="drop">
+    <p><strong>Drop episode files here</strong> or <button id="pick" type="button">choose files</button></p>
+    <p class="hint">MP4/M4A decode in-browser via WebCodecs. Other containers need a fallback backend.</p>
+    <input id="files" type="file" multiple accept="audio/*,video/*" hidden>
+  </div>
+  <ul id="filelist" class="files"></ul>
+  <p id="capability" class="note"></p>
+  <button id="analyze" type="button" disabled>Analyse</button>
+</section>
+
+<section id="step2" hidden>
+  <h2>Recurring assets found</h2>
+  <p class="hint">
+    Assets are found by looking for audio that repeats across episodes, then measured
+    precisely. “Confidence” is chroma similarity inside the detected region — below
+    about 0.9 means the match is weak.
+  </p>
+  <table id="assets">
+    <thead>
+      <tr><th></th><th>kind</th><th>episodes</th><th>length</th><th>mean start</th><th>confidence</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <p class="hint" id="absentNote"></p>
+  <div class="row">
+    <label>Mode
+      <select id="mode">
+        <option value="remove">Remove the music</option>
+        <option value="keep">Keep only the music</option>
+      </select>
+    </label>
+    <button id="cut" type="button">Find all music and export</button>
+    <button id="dirBtn" type="button" hidden>Choose output folder…</button>
+  </div>
+  <p class="note">
+    Segmentation is <strong>assistive, not automatic</strong>: it runs close to its decision
+    boundary, so some episodes yield fewer segments than they should. Review the
+    per-episode counts below before trusting the output.
+  </p>
+</section>
+
+<section id="step3" hidden>
+  <h2>Result</h2>
+  <table id="results">
+    <thead><tr><th>episode</th><th>segments</th><th>music</th><th>output</th><th>file</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p id="summary" class="note"></p>
+</section>
+
+<footer>
+  <p class="hint">
+    Serve this page over HTTP (<code>python3 -m http.server</code> from the repo root) —
+    ES modules do not load from <code>file://</code>.
+  </p>
+</footer>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>
