@@ -609,8 +609,10 @@ $('export').onclick = async () => {
       const { bytes: out, info } = renderCut(bytes, ranges, { mode: 'remove' });
       totalRemoved += info.removedSeconds;
 
-      const name = entry.file.name.replace(/\.[^.]+$/, '') + ' (no music)' +
-        (entry.file.name.match(/\.[^.]+$/) ?? ['.m4a'])[0];
+      // Output keeps the input's name: the file the user gets back is the same
+      // episode, minus music, and a suffix only makes it harder to line the two
+      // up. The folder is what separates them.
+      const name = entry.file.name;
 
       let where;
       if (outDir) {
