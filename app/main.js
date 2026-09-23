@@ -494,7 +494,9 @@ function renderMusic() {
         rows += `<tr class="seg"><td class="pick">` +
           `<input type="checkbox" class="segPick" data-id="${ep.id}" data-i="${i}" ` +
           `${ep.enabled.has(i) ? 'checked' : ''}></td>` +
-          `<td colspan="3">${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
+          `<td colspan="3"><span class="segno" ` +
+          `title="segment ${i + 1} of ${total} in ${ep.id}">#${i + 1}</span> ` +
+          `${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
           ` ${fmtTime(s.start)} – ${fmtTime(s.end)}` +
           ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
       });

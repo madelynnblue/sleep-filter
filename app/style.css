@@ -71,6 +71,7 @@ fieldset.features em { display:block; color:var(--dim); font-style:normal; font-
 #music tr.seg td { color:var(--dim); font-size:.82rem; padding-top:.15rem; padding-bottom:.15rem; }
 #music tr.seg td:nth-child(2) { padding-left:2.1rem; }
 #music tr.seg button.play { padding:.05rem .42rem; font-size:.75rem; vertical-align:middle; }
+#music .segno { font-variant-numeric:tabular-nums; }
 #music .pick { width:2rem; }
 #music .dim { opacity:.65; }
 button.twisty { background:none; border:0; color:var(--dim); cursor:pointer; padding:0 .45rem 0 0;
