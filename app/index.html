@@ -26,13 +26,20 @@
 
   <fieldset class="features">
     <legend>What to find</legend>
-    <label>
-      <input type="checkbox" id="featThemes" checked>
-      <span>
-        <strong>Common themes</strong>
-        <em>Audio that repeats across episodes — title themes and recurring stings.</em>
-      </span>
-    </label>
+    <div class="feat">
+      <label>
+        <input type="checkbox" id="featThemes" checked>
+        <span>
+          <strong>Common themes</strong>
+          <em>Audio that repeats across episodes — title themes and recurring stings.</em>
+        </span>
+      </label>
+      <p class="opt">
+        <label for="topN">Show the top</label>
+        <input type="number" id="topN" value="5" min="1" max="20" step="1">
+        <label for="topN">most common clips</label>
+      </p>
+    </div>
     <label>
       <input type="checkbox" id="featMusic" checked>
       <span>
@@ -41,12 +48,6 @@
       </span>
     </label>
   </fieldset>
-
-  <p class="row">
-    <label for="topN">Show the top</label>
-    <input type="number" id="topN" value="5" min="1" max="20" step="1">
-    <label for="topN">most common clips</label>
-  </p>
 
   <p id="status" class="status" hidden></p>
   <p id="capability" class="note" hidden></p>

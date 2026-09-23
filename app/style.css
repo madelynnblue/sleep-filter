@@ -49,6 +49,11 @@ fieldset.features legend { color:var(--dim); font-size:.8rem; text-transform:upp
 fieldset.features label { display:flex; gap:.7rem; align-items:flex-start; padding:.5rem 0; cursor:pointer; }
 fieldset.features strong { display:block; font-weight:600; }
 fieldset.features em { display:block; color:var(--dim); font-style:normal; font-size:.85rem; }
+/* A feature's own settings sit under it, indented to its label text, so the
+   control is never separated from the thing it configures. */
+fieldset.features .opt { display:flex; align-items:center; gap:.45rem;
+  margin:.1rem 0 .6rem 1.6rem; color:var(--dim); font-size:.85rem; }
+fieldset.features .opt label { display:inline; padding:0; cursor:default; }
 
 .status {
   margin:1rem 0 0; padding:.5rem .8rem; border-radius:6px; font-size:.88rem;
