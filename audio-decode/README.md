@@ -144,6 +144,9 @@ Both skip cleanly when the corpus or ffmpeg is absent.
 - **No `elst` precision beyond the initial trim.** Cutting mid-file keeps the
   priming trim; cutting the head drops it. Sub-frame edit lists are not modelled.
 - **Non-fragmented MP4 only** for the built-in path; everything else falls back.
+- **`udta` is copied verbatim, so a `chpl` chapter list would be wrong.** Tags
+  survive a cut intact, but chapter timestamps describe the original timeline and
+  are not remapped. No source seen so far carries chapters.
 - **The whole file is read into memory** to demux, because `moov` can sit at
   either end. Fine for audio (tens of MB); a large video file would want
   range-based `moov` reading.

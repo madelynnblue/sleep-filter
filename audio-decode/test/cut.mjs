@@ -194,6 +194,24 @@ console.log('\ncut (keep) — extract only a region:');
   ok(`extract re-demuxes (${re.track.sampleCount} samples)`, re.track.sampleCount === info.keptSamples);
 }
 
+/* ------------------------------------------------------------ tags -- */
+
+console.log('\ntags survive the cut:');
+{
+  // The cut is the same episode with music removed, so its title, artist, track
+  // number and so on still describe it. udta is copied verbatim rather than
+  // re-serialised, so anything the source carries comes back byte for byte.
+  const { bytes } = cutAudio(source, [[300, 312]], { mode: 'remove' });
+  const before = demuxMp4(source).udtaRaw;
+  const after = demuxMp4(bytes).udtaRaw;
+
+  ok(`source carries a udta box (${before ? before.length : 0} bytes)`, !!before);
+  ok(`output carries one too (${after ? after.length : 0} bytes)`, !!after);
+  ok('udta is byte-identical',
+     !!before && !!after && before.length === after.length &&
+     before.every((v, i) => v === after[i]));
+}
+
 /* ------------------------------------------------------------ edges -- */
 
 console.log('\nedge cases:');

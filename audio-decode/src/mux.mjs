@@ -11,8 +11,14 @@
  * entry and is valid for audio — seeking granularity is not worth the extra
  * machinery here.
  *
- * Not written: edts/elst. AAC priming samples therefore play as a few ms of
- * padding rather than being trimmed. Inaudible, and documented.
+ * edts/elst is written when the original first sample survived, so AAC priming
+ * is trimmed exactly as the source trimmed it.
+ *
+ * Tags are not parsed here: the caller passes the source's whole `udta` box and
+ * it is embedded verbatim, so every atom type survives whether or not this code
+ * knows what it means. One caveat that comes with copying it whole — a `chpl`
+ * chapter list, if a source ever has one, describes the ORIGINAL timeline and
+ * would need remapping.
  *
  * Pure JS, no dependencies, browser-safe.
  */
@@ -88,16 +94,18 @@ function stts(durations) {
  * @param {object} track           { timescale, stsdRaw, sampleRate, channels }
  * @param {Array<{offset:number,size:number,duration:number}>} samples
  *        in presentation order; `duration` is in media-timescale units
- * @param {{movieTimescale?: number, editMediaTime?: number}} [opts]
+ * @param {{movieTimescale?: number, editMediaTime?: number, udta?: Uint8Array}} [opts]
  *        editMediaTime: media-unit offset to skip at the start (AAC priming).
  *        Pass 0 when the original first sample was dropped.
+ *        udta: the source's whole `udta` box, embedded verbatim so the output
+ *        keeps the input's tags.
  * @returns {Uint8Array}
  */
 export function muxAudioMp4(source, track, samples, opts = {}) {
   // Default the movie timescale to the MEDIA timescale: the edit list's
   // segment_duration is expressed in movie units, and this keeps it in the same
   // units as the sample durations it describes.
-  const { movieTimescale = track.timescale, editMediaTime = 0 } = opts;
+  const { movieTimescale = track.timescale, editMediaTime = 0, udta = null } = opts;
   if (!track?.stsdRaw?.length) throw new Error('muxAudioMp4: track.stsdRaw is required');
   if (!track?.timescale) throw new Error('muxAudioMp4: track.timescale is required');
   const mediaTimescale = track.timescale;
@@ -159,7 +167,9 @@ export function muxAudioMp4(source, track, samples, opts = {}) {
         MATRIX,
         new Uint8Array(24),
         u32(2)),                        // next_track_ID
-      trak);
+      trak,
+      // after trak, where Apple puts it
+      ...(udta ? [udta] : []));
   };
 
   // Two passes: box sizes do not depend on the offset value, so measuring with a

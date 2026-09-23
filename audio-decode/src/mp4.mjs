@@ -377,10 +377,17 @@ export function demuxMp4(buf) {
     ? Math.round((chosen.duration / chosen.timescale) * 1e6)
     : (chosen.samples.at(-1)?.timestampUs ?? 0) + (chosen.samples.at(-1)?.durationUs ?? 0);
 
+  const udta = findBox(buf, moov.payload, moov.end, 'udta');
+
   return {
     container: 'mp4',
     fragmented,
     durationUs,
+    // iTunes-style tags, chapters and whatever else the file carries in udta.
+    // Handed to the muxer as raw bytes: re-serialising a tag list means
+    // understanding every atom type, and anything unrecognised would be silently
+    // dropped.
+    udtaRaw: udta ? buf.subarray(udta.start, udta.end) : null,
     track: {
       codec: chosen.audio?.codec ?? null,
       sampleRate: chosen.audio?.sampleRate ?? 0,

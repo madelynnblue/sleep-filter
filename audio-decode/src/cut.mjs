@@ -96,6 +96,9 @@ export function cutAudio(source, ranges, opts = {}) {
   const bytes = muxAudioMp4(source, demuxed.track, sel.kept, {
     ...opts,
     editMediaTime: keptHead ? demuxed.track.editMediaTime : 0,
+    // tags travel with the audio: the cut is the same episode, so its title,
+    // artist, track number and so on still describe it
+    udta: demuxed.udtaRaw,
   });
   const ts = demuxed.track.timescale;
   const frameSec = demuxed.samples[0].duration / ts;
