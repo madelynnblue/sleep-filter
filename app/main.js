@@ -558,6 +558,37 @@ function renderMusic() {
 // warning about — browsers routinely block a burst of downloads.
 if (!hasFS) $('exportHint').textContent = 'Files will download individually.';
 
+/**
+ * Ask once, before anything is written, about destination files that already
+ * exist. Returns false if the user cancels.
+ *
+ * One prompt covering every clash rather than one per file: replacing is a
+ * single decision about the whole export, and a folder with a full season in it
+ * would otherwise mean 19 dialogs.
+ *
+ * Only meaningful where a real directory was chosen. The download fallback
+ * cannot see the destination at all — the browser handles naming there.
+ */
+async function confirmReplacements(dir, names) {
+  const clashes = [];
+  for (const name of names) {
+    try {
+      await dir.getFileHandle(name);
+      clashes.push(name);
+    } catch (err) {
+      if (err.name !== 'NotFoundError') throw err;   // absent is the good case
+    }
+  }
+  if (!clashes.length) return true;
+
+  const shown = clashes.slice(0, 20);
+  const more = clashes.length - shown.length;
+  return confirm(
+    `${clashes.length} file${clashes.length === 1 ? '' : 's'} already in that folder ` +
+    `will be replaced:\n\n${shown.join('\n')}${more > 0 ? `\n…and ${more} more` : ''}\n\n` +
+    'Replace them?');
+}
+
 $('export').onclick = async () => {
   const wantThemes = $('featThemes').checked;
   const wantMusic = $('featMusic').checked;
@@ -595,24 +626,31 @@ $('export').onclick = async () => {
     let outDir = null;
     if (hasFS) {
       try { outDir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
-      catch { $('export').disabled = false; $('export').textContent = 'Export…'; return; }
+      catch { return; }        // cancelled picker; the finally restores the button
     }
+
+    // Plan first. The overwrite check has to run before anything is written, or
+    // cancelling would leave a half-exported folder behind.
+    const plan = [];
+    for (const [id, ranges] of perFile) {
+      const entry = state.files.find((f) => f.id === id);
+      if (!entry || !ranges.length) continue;
+      // Output keeps the input's name: the file the user gets back is the same
+      // episode, minus music, and a suffix only makes it harder to line the two
+      // up. The folder is what separates them.
+      plan.push({ entry, ranges, name: entry.file.name });
+    }
+
+    if (outDir && !await confirmReplacements(outDir, plan.map((p) => p.name))) return;
 
     const tb = $('results').querySelector('tbody');
     tb.innerHTML = '';
     let written = 0, totalRemoved = 0;
 
-    for (const [id, ranges] of perFile) {
-      const entry = state.files.find((f) => f.id === id);
-      if (!entry || !ranges.length) continue;
+    for (const { entry, ranges, name } of plan) {
       const bytes = new Uint8Array(await entry.file.arrayBuffer());
       const { bytes: out, info } = renderCut(bytes, ranges, { mode: 'remove' });
       totalRemoved += info.removedSeconds;
-
-      // Output keeps the input's name: the file the user gets back is the same
-      // episode, minus music, and a suffix only makes it harder to line the two
-      // up. The folder is what separates them.
-      const name = entry.file.name;
 
       let where;
       if (outDir) {
@@ -630,7 +668,7 @@ $('export').onclick = async () => {
       }
       written++;
       tb.insertAdjacentHTML('beforeend',
-        `<tr><td>${id}</td><td>${ranges.length}</td>` +
+        `<tr><td>${entry.id}</td><td>${ranges.length}</td>` +
         `<td>${info.removedSeconds.toFixed(0)}s</td>` +
         `<td>${info.outputSeconds.toFixed(0)}s</td><td>${where}</td></tr>`);
     }
