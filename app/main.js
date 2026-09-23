@@ -326,11 +326,10 @@ $('topN').onchange = () => autoRun();
 
 /* ---------------------------------------------------------- export -- */
 
-if (hasFS) {
-  $('exportHint').textContent = 'You will pick an output folder.';
-} else {
-  $('exportHint').textContent = 'Files will download individually.';
-}
+// The export button's ellipsis already implies a picker where one exists. The
+// hint is worth showing only when files will download instead, which is worth
+// warning about — browsers routinely block a burst of downloads.
+if (!hasFS) $('exportHint').textContent = 'Files will download individually.';
 
 $('export').onclick = async () => {
   const wantThemes = $('featThemes').checked;

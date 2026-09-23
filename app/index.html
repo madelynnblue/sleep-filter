@@ -11,8 +11,7 @@
 <header>
   <h1>Remove music from episodes</h1>
   <p class="sub">
-    Finds music and cuts it out, losslessly. Nothing is uploaded, and
-    <strong>nothing is written to disk until you say so</strong>.
+    Finds music and cuts it out, losslessly. Nothing is uploaded.
   </p>
 </header>
 
@@ -55,8 +54,6 @@
 
 <!-- ----------------------------------------------------------- verify -- -->
 <section id="verify" hidden>
-  <div class="banner">Nothing has been written to disk yet.</div>
-
   <h2>1. Common themes</h2>
   <p class="hint">
     Play each clip to check it. Untick anything that isn't music you want gone —
@@ -86,14 +83,6 @@
   </table>
   <p id="summary" class="note"></p>
 </section>
-
-<footer>
-  <p class="hint">
-    Must be served over HTTP — ES modules do not load from <code>file://</code>.
-    From the repo root: <code>python3 -m http.server 8000</code>, then
-    <code>/app/</code>.
-  </p>
-</footer>
 
 <script type="module" src="./main.js"></script>
 </body>
