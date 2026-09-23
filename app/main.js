@@ -303,7 +303,7 @@ async function loadAudio(key) {
 function playButton(key, title = PLAY_TITLE) {
   const on = audition.key === key;
   return `<button class="play${on ? ' playing' : ''}" type="button" data-key="${key}" ` +
-    `data-title="${title}" title="${on ? 'Pause' : title}">${on ? '⏸' : '▶'}</button>`;
+    `data-title="${title}" title="${on ? 'Stop' : title}">${on ? '⏹' : '▶'}</button>`;
 }
 
 /** Every play button on the page is wired the same way. */
@@ -318,8 +318,8 @@ function wirePlayButtons(root) {
 function setPlayIcon(key, playing) {
   for (const el of document.querySelectorAll('button.play')) {
     if (el.dataset.key !== key) continue;
-    el.textContent = playing ? '⏸' : '▶';
-    el.title = playing ? 'Pause' : (el.dataset.title || PLAY_TITLE);
+    el.textContent = playing ? '⏹' : '▶';
+    el.title = playing ? 'Stop' : (el.dataset.title || PLAY_TITLE);
     el.classList.toggle('playing', playing);
   }
 }
