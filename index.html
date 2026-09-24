@@ -125,6 +125,17 @@
       <a href="https://github.com/madelynnblue/sleep-filter">GitHub</a>
     </footer>
 
+    <!--
+      Playback is the browser's own control, in a bar that lives outside every
+      list. The music tables are re-rendered on each checkbox toggle, so an
+      <audio> inside one of them would be destroyed — and stop — exactly while
+      the user is auditioning and deciding. Here it survives that.
+    -->
+    <div id="player" class="player" hidden>
+      <audio id="playerAudio" controls preload="none"></audio>
+      <span id="playerLabel" class="player-label"></span>
+    </div>
+
     <script type="module" src="./main.js"></script>
   </body>
 </html>

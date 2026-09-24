@@ -24,7 +24,7 @@ const state = {
   assets: [],         // all discovered
   shown: [],          // the top N actually displayed
   selected: new Set(),// indices into `shown` that the user wants removed
-  previews: new Map(),// play key -> { url, audio } | { loading: true }
+  previews: new Map(),// play key -> { url } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
   shares: null,       // stage weights for the progress meter, learned at runtime
   collapsed: new Set(),
@@ -393,13 +393,38 @@ function renderClips() {
  * ("theme:0", "music:S01E01:3", "ep:S01E01") that resolves either to a byte
  * range to decode, or to the original file, which the browser streams itself.
  *
- * Only one thing sounds at a time, and every way playback can stop routes
- * through stopAudition(), so no button can be left showing a pause icon for
- * audio that is not playing.
+ * Playback is the browser's own <audio controls>, in a bar that lives outside
+ * every list the render functions rebuild. That placement is the point: the
+ * music table is re-rendered on every checkbox toggle, so an <audio> inside it
+ * would be destroyed — and stop — exactly while the user is auditioning and
+ * deciding. The bar is static markup, so a clip keeps playing while the list
+ * around it changes, and scrubbing, seeking and replay come from the platform
+ * rather than from buttons we would have to reimplement.
+ *
+ * The row buttons therefore only choose WHAT plays. They are not transports.
  */
 
 const PLAY_TITLE = 'Play';
-let audition = { key: null, audio: null };
+const player = $('player');
+const playerAudio = $('playerAudio');
+const playerLabel = $('playerLabel');
+let audition = { key: null };          // what the bar is currently holding
+
+/** Human label for whatever a key names, shown beside the player. */
+function labelFor(key) {
+  const [kind, a, b] = key.split(':');
+  if (kind === 'ep') return a;
+  if (kind === 'theme') {
+    const asset = state.shown[Number(a)];
+    const region = asset && exampleRegion(asset);
+    return region ? `${region.id} ${fmtTime(region.start)}–${fmtTime(region.end)}` : 'example';
+  }
+  if (kind === 'music') {
+    const seg = state.music.find((x) => x.id === a)?.segments[Number(b)];
+    return seg ? `${a} ${fmtTime(seg.start)}–${fmtTime(seg.end)}` : 'segment';
+  }
+  return '';
+}
 
 /** Resolve a play key to the audio it names, or null if that audio is gone. */
 function sourceFor(key) {
@@ -428,23 +453,26 @@ function sourceFor(key) {
   return null;
 }
 
-/** Prepare the audio behind `key`: decode a range, or open the whole file. */
-async function loadAudio(key) {
+/** Prepare a key's audio, returning a blob URL — from cache when we have it. */
+async function urlFor(key) {
+  const cached = state.previews.get(key);
+  if (cached?.url) return cached.url;
   const src = sourceFor(key);
   if (!src) throw new Error('that audio is no longer available');
 
   const url = src.direct
     ? URL.createObjectURL(src.file)
     : URL.createObjectURL((await extractClipWav(src.file, src.start, src.end, { decode: {} })).blob);
-  return { url, audio: new Audio(url) };
+  state.previews.set(key, { url });
+  return url;
 }
 
-/** Markup for a play button. Reads the live player state, so a list re-rendered
- *  part-way through playback still shows the pause icon. */
+/** Markup for the row button that loads a key into the bar. Reads the live
+ *  player state, so a list re-rendered part-way through still shows it. */
 function playButton(key, title = PLAY_TITLE) {
   const on = audition.key === key;
   return `<button class="play${on ? ' playing' : ''}" type="button" data-key="${key}" ` +
-    `data-title="${title}" title="${on ? 'Stop' : title}">${on ? '⏹' : '▶'}</button>`;
+    `data-title="${title}" title="${on ? 'Replay from the start' : title}">▶</button>`;
 }
 
 /** Every play button on the page is wired the same way. */
@@ -454,28 +482,24 @@ function wirePlayButtons(root) {
   }
 }
 
-// Flip every button for `key` to the right icon. Re-queried rather than
-// captured, because the render functions rebuild these buttons underneath us.
+// Mark which row the bar is holding. Re-queried rather than captured, because
+// the render functions rebuild these buttons underneath us.
 function setPlayIcon(key, playing) {
   for (const el of document.querySelectorAll('button.play')) {
-    if (el.dataset.key !== key) continue;
-    el.textContent = playing ? '⏹' : '▶';
-    el.title = playing ? 'Stop' : (el.dataset.title || PLAY_TITLE);
-    el.classList.toggle('playing', playing);
+    const on = playing && el.dataset.key === key;
+    el.classList.toggle('playing', on);
+    el.title = on ? 'Replay from the start' : (el.dataset.title || PLAY_TITLE);
   }
 }
 
-// Stop whatever is sounding. Every stop funnels through here — second click,
-// another clip, a re-render, the audio ending — so the pause icon can never be
-// stranded on a button.
+// Let go of the clip the bar is holding. Clicking another row, a re-analysis and
+// a revocation of the URL all funnel through here.
 function stopAudition() {
   if (!audition.key) return;
-  const { key, audio } = audition;
-  audition = { key: null, audio: null };
-  if (audio) {
-    audio.pause();
-    audio.currentTime = 0;   // so the next click starts it over
-  }
+  const { key } = audition;
+  audition = { key: null };
+  playerAudio.pause();
+  playerAudio.currentTime = 0;   // so the next click starts it over
   setPlayIcon(key, false);
 }
 
@@ -488,48 +512,60 @@ function clearPreviews(keep = () => false) {
     if (entry.url) URL.revokeObjectURL(entry.url);
     state.previews.delete(key);
   }
+  // If the bar is holding a URL that was just revoked, unload the element rather
+  // than leave a dead source sitting in it.
+  if (playerAudio.src && ![...state.previews.values()].some((e) => e.url === playerAudio.src)) {
+    playerAudio.removeAttribute('src');
+    playerAudio.load();
+    player.hidden = true;
+    playerLabel.textContent = '';
+  }
 }
 
+// Reaching the end is the one stop we do not initiate. The bar keeps the clip
+// loaded so it can be replayed; only the highlight goes.
+playerAudio.addEventListener('ended', () => {
+  const { key } = audition;
+  audition = { key: null };
+  if (key) setPlayIcon(key, false);
+});
+
 async function playKey(key, button) {
-  if (audition.key && audition.key !== key) stopAudition();
-  const cached = state.previews.get(key);
+  if (state.previews.get(key)?.loading) return;
 
-  // already prepared: this click is a plain play/pause toggle
-  if (cached?.audio) {
-    if (!cached.audio.paused) { stopAudition(); return; }
-    audition = { key, audio: cached.audio };
-    setPlayIcon(key, true);
+  let url = state.previews.get(key)?.url;
+  if (!url) {
+    state.previews.set(key, { loading: true });
+    button.textContent = '…';
+    button.disabled = true;
     try {
-      await cached.audio.play();
+      url = await urlFor(key);
     } catch (err) {
-      stopAudition();
-      button.title = `Could not play: ${err.message}`;
+      state.previews.delete(key);
+      button.disabled = false;
+      button.textContent = '▶';
+      button.title = `Could not load: ${err.message}`;
+      return;
     }
-    return;
-  }
-  if (cached?.loading) return;
-
-  state.previews.set(key, { loading: true });
-  button.textContent = '…';
-  button.disabled = true;
-  let loaded = null;
-  try {
-    loaded = await loadAudio(key);
-    // reaching the end is the one stop we do not initiate ourselves
-    loaded.audio.onended = () => { if (audition.key === key) stopAudition(); };
-    state.previews.set(key, loaded);
-    audition = { key, audio: loaded.audio };
-    setPlayIcon(key, true);
-    await loaded.audio.play();
-  } catch (err) {
-    if (audition.key === key) audition = { key: null, audio: null };
-    if (loaded) { loaded.audio.pause(); URL.revokeObjectURL(loaded.url); }
-    state.previews.delete(key);
-    button.textContent = '!';
-    button.title = `Could not play: ${err.message}`;
-    setTimeout(() => { if (audition.key !== key) setPlayIcon(key, false); }, 1500);
-  } finally {
     button.disabled = false;
+  }
+
+  // The list may have been rebuilt while that decoded, so re-find the button by
+  // key rather than trusting the element that was clicked.
+  const fresh = document.querySelector(`button.play[data-key="${key}"]`);
+  if (fresh) fresh.textContent = '▶';
+
+  if (playerAudio.src === url) playerAudio.currentTime = 0;   // replay from the top
+  else playerAudio.src = url;
+  player.hidden = false;
+  playerLabel.textContent = labelFor(key);
+  audition = { key };
+  setPlayIcon(key, true);
+  try {
+    await playerAudio.play();
+  } catch (err) {
+    stopAudition();
+    playerLabel.textContent = `Could not play: ${err.message}`;
   }
 }
 

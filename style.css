@@ -102,6 +102,19 @@ th { color:var(--dim); font-weight:600; }
 #matrix .off { opacity:.3; }
 small { color:var(--dim); font-weight:400; }
 
+/* The player bar. Sticky rather than fixed, so it never covers the last row of
+   a table. It sits outside every list on purpose: the music tables are rebuilt
+   on each checkbox toggle, and a player inside them would be destroyed mid-listen. */
+.player { position:sticky; bottom:0; z-index:2; display:flex; align-items:center; gap:.8rem;
+  margin-top:1.5rem; padding:.6rem .8rem; background:var(--panel);
+  border:1px solid var(--line); border-radius:8px; }
+/* `display:flex` above would otherwise beat the UA's [hidden] rule, leaving an
+   empty bar on screen before anything is played. */
+.player[hidden] { display:none; }
+.player audio { flex:1 1 auto; min-width:0; height:34px; }
+.player-label { color:var(--dim); font-size:.85rem; white-space:nowrap;
+  font-variant-numeric:tabular-nums; }
+
 a { color:var(--accent); text-decoration:none; }
 a:hover { text-decoration:underline; }
 footer { margin-top:2.5rem; padding-top:1rem; border-top:1px solid var(--line);
