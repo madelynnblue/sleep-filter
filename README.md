@@ -8,29 +8,14 @@ Sleep filter is a website that:
 
 - identifies common audio elements among a group of files
 - identifies music in files
-- cuts 
+- cuts the above from audio
+- saves the results back to a directory
 
-Finds the music in TV episodes and cuts it out, so what's left is easier to fall
-asleep to. Runs entirely in the browser — no server, no upload, no dependencies.
+It works completely in your browser without any server backend.
+Nothing is uploaded anywhere.
+It's fast and pretty good.
 
-Music is what wakes you up; dialogue is not. So this finds the music, lets you
-audition every candidate and untick the ones that aren't music you want gone, and
-writes new files with the rest removed.
-
-## What it does
-
-Drop in some episodes. It finds two different kinds of music:
-
-- **Common clips** — audio that *repeats across episodes*: the title theme, the
-  end credits, recurring stings. Confirmed by cross-episode consensus, so this is
-  the high-confidence stage.
-- **General music** — music inside a *single* episode that never repeats: one-off
-  interludes, diegetic songs, musical credits. No corroboration is possible, so
-  this stage is assistive and will be wrong sometimes.
-
-You review both, audition anything with a play button, and untick what isn't
-music you want gone — the removal uses only what stays ticked. Then it cuts those
-spans out and writes new files.
+Drop some audio or video files in to the box.
 
 ## How it works
 
