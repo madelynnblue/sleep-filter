@@ -19,23 +19,45 @@ import {
 const $ = (id) => document.getElementById(id);
 
 /**
- * The stage split the progress meter uses, remembered between visits.
+ * Cold-start stage splits for the progress meter, before anything is measured.
  *
- * It is not the same in a browser as under Node — WebCodecs hands back one frame
- * at a time from another thread while the ffmpeg fallback spawns a process — so
- * the figures in `episode.mjs` can only ever be a starting point. It is also the
- * one thing that cannot be learned before it is needed: the first file of a
- * session is analysed before any timing exists, and for a single-file run that
- * is the entire run. Keeping it means the second run onwards is right.
+ * The split belongs to the DECODER, not to this code, so there is no single
+ * default. Measured in a browser on a 22-minute AAC episode, WebCodecs takes
+ * **88%** of the analysis — features 9%, fingerprints 3%. `episode.mjs` defaults
+ * to the Node/ffmpeg figures (decode 49%, features 37%, fingerprints 14%), and
+ * using those in a page put the meter at 27% when half the wall clock had
+ * passed: the bar crawled, then raced, then the fingerprints share flashed by.
+ *
+ * PCM has no decode step worth the name, so its split is just the two JS stages
+ * in the ratio they measure at under Node (72:28). That one is derived rather
+ * than measured, on the grounds that those stages are the same JavaScript on
+ * either backend and only decode differs.
+ */
+const COLD_SHARES = {
+  webcodecs: { decode: 0.88, chroma: 0, features: 0.09, fingerprints: 0.03 },
+  pcm: { decode: 0.05, chroma: 0, features: 0.68, fingerprints: 0.27 },
+};
+
+/** Which decoder a file will take, from its extension. Mirrors audio-decode. */
+const backendFor = (name) => (/\.(wav|aiff?|aif)$/i.test(name) ? 'pcm' : 'webcodecs');
+
+/**
+ * Stage splits measured in this browser, remembered between visits, per backend.
+ *
+ * This is the one thing that cannot be learned before it is needed: the first
+ * file of a session is analysed before any timing exists, and for a single-file
+ * run that is the entire run. Keeping it means the second run onwards is right.
  */
 const SHARES_KEY = 'sleep-filter.stage-shares.v1';
 function storedShares() {
   try {
-    const { shares } = JSON.parse(localStorage.getItem(SHARES_KEY) ?? 'null') ?? {};
+    const raw = JSON.parse(localStorage.getItem(SHARES_KEY) ?? 'null');
+    if (!raw || typeof raw !== 'object') return {};
     // A decode share of zero would freeze the meter for the whole first stage.
-    return shares && shares.decode > 0 ? shares : null;
+    for (const [k, v] of Object.entries(raw)) if (!(v?.decode > 0)) delete raw[k];
+    return raw;
   } catch {
-    return null;                      // no storage, or something else wrote the key
+    return {};                        // no storage, or something else wrote the key
   }
 }
 
@@ -49,11 +71,17 @@ const state = {
   previews: new Map(),// play key -> { url } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
   musicSeed: null,    // 'clips' | 'foreground' — what the music stage calibrated on
-  shares: storedShares(),  // stage weights for the progress meter, measured at runtime
-  sharesMeasured: false,   // whether this session has logged what it measured
+  shares: storedShares(),  // backend -> stage weights, measured at runtime
+  sharesLogged: new Set(), // backends whose split has been reported to the console
   collapsed: new Set(),
   outDir: null,
 };
+
+/** The stage split to analyse `file` with: what we measured, else the default. */
+function sharesFor(file) {
+  const backend = backendFor(file.name);
+  return state.shares[backend] ?? COLD_SHARES[backend] ?? undefined;
+}
 
 const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 
@@ -288,28 +316,29 @@ function learnShares(timings, backend) {
   const measured = {};
   for (const k of stages) measured[k] = (timings[k] > 0 ? timings[k] : 0) / total;
 
+  const which = backend ?? 'webcodecs';
   // Smooth rather than take the last file: one file's timings are noisy (a
   // background process, a cold cache) and a single odd file should not throw the
   // meter off for the rest of the session.
-  const prior = state.shares;
+  const prior = state.shares[which];
   const alpha = 0.5;
   const next = {};
   for (const k of stages) next[k] = prior?.[k] == null ? measured[k] : (1 - alpha) * prior[k] + alpha * measured[k];
-  state.shares = next;
+  state.shares[which] = next;
 
   // Keep it. A single-file run gets no chance to use what it just learned, and
   // the browser's split is nothing like the one measured under Node, so without
   // this the meter is wrong on the first run of every session — which is how
   // most people use it.
   try {
-    localStorage.setItem(SHARES_KEY, JSON.stringify({ backend: backend ?? null, shares: next }));
+    localStorage.setItem(SHARES_KEY, JSON.stringify(state.shares));
   } catch { /* private mode, or storage disabled: the session's own value still applies */ }
 
-  if (!state.sharesMeasured) {
-    state.sharesMeasured = true;
+  if (!state.sharesLogged.has(which)) {
+    state.sharesLogged.add(which);
     const pct = (v) => `${(v * 100).toFixed(0)}%`;
     console.info(
-      `[sleep filter] measured stage split on ${backend ?? 'unknown'} backend: ` +
+      `[sleep filter] measured stage split on ${which} backend: ` +
       stages.map((k) => `${k} ${pct(next[k])}`).join(', ') +
       ' — the progress meter now uses this.');
   }
@@ -360,7 +389,7 @@ async function analyzePool() {
         entry.error = err.message ?? 'worker failed';
         finish(null);
       };
-      worker.postMessage({ id: entry.id, source: entry.file, shares: state.shares ?? undefined });
+      worker.postMessage({ id: entry.id, source: entry.file, shares: sharesFor(entry.file) });
     });
   }
 

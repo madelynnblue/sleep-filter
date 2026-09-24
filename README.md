@@ -218,7 +218,13 @@ Measured on a 19-episode corpus, and asserted by the test suite:
 | cut positions vs independent ground truth | **mean 0.81 s, max 0.83 s** |
 | general-music stage | segments in **18 of 18** episodes |
 | level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
-| time per 22-minute episode | ~3.5 s (decode 47%, features 38%, fingerprints 15%) |
+| time per 22-minute episode | ~3.5 s under Node (decode 49%, features 37%, fingerprints 14%) |
+
+**The browser splits that time completely differently.** Measured on the same
+kind of episode through WebCodecs: **decode 88%**, features 9%, fingerprints 3%.
+Decoding dominates in a page in a way it never does through ffmpeg, which is why
+the progress meter learns each backend's split at runtime and remembers it — the
+figures above would put the bar at 27% when half the wall clock had passed.
 
 The page is verified end to end in a real browser: the module graph loads,
 WebCodecs decodes MP4/AAC, the phase-1 worker pool runs and transfers its buffers
