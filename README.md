@@ -93,11 +93,26 @@ every frame with a linear discriminant.
 That is chicken-and-egg, because the theme itself comes from matching episodes
 against each other: **common clips need at least two files** by construction,
 while this stage is per-episode and must run on any number of them. With no theme
-to learn from it calibrates on the episode's own end credits instead — on this
-corpus they sit a consistent 35.4–36.3 s before the end and are music in every
-episode. That is a weaker example: mean calibration separation falls from 1.63 to
-0.86, so the threshold admits more and roughly twice as much audio is proposed.
-It is the fallback rather than the default, and the page says when it is in use.
+to learn from it picks its own example instead: the 10 seconds that are loudest
+and least syllable-modulated, scored `level − 30 · mod4`. That is the audio most
+obviously *foreground music*, which is what this stage is after.
+
+The obvious alternative, the end credits, measures much worse, which is worth
+recording because it is the first thing one would reach for. On this corpus the
+credits' `mod4` (0.240) sits barely above non-music audio (0.195), so calibrating
+on them teaches the discriminant that music may be that speech-like — and
+dialogue-under-music starts to pass. Over 18 episodes, against what the theme
+calibration agrees is music:
+
+| exemplar | separation | music | not music |
+|---|---|---|---|
+| theme (reference) | 1.63 | 1417 s | 0 s |
+| end credits, 45 s | 0.86 | 1176 s | **1930 s** |
+| loudest, least speech-like 10 s | **1.81** | 1029 s | **66 s** |
+
+Every window from 10 s to 30 s and every weight from 10 to 60 kept the known
+false positive out, so this is a plateau rather than a tuned point. It is still
+the fallback rather than the default, and the page says when it is in use.
 
 Measured on real episodes, `logRms` earns almost no weight — its variation
 *within* a class (silence through speech) dwarfs the difference between classes.
@@ -245,10 +260,13 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   at **two files the votes smear across 100–200 s and nothing is found at all**.
   That is the 90 s guard rejecting a smear rather than a miss, and it is left
   that way on purpose — accepting it would cut minutes of dialogue.
-- **The end-credits fallback assumes end credits are music.** It is right for
-  this material and wrong for, say, a podcast that talks to the end, where the
-  seed would be speech and the calibration would be meaningless. It only applies
-  when no common clip was found.
+- **The single-file exemplar is a heuristic, not a detector.** With no common
+  clip it calibrates on the loudest, least speech-like 10 s it can find. That
+  recovers the theme's class separation on this corpus (1.81 against 1.63) and
+  keeps the known false positive out, but it has only been judged against what
+  the theme calibration says — never by ear, and never on material that is not
+  a TV episode. On a podcast or a music track it will select something and
+  calibrate on it without any way to know it chose well.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
 - **Music under dialogue is out of scope by design** and is left in place.

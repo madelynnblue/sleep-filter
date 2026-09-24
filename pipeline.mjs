@@ -11,11 +11,15 @@
  */
 
 import { EpisodeAnalyzer, Library, segmentEpisode } from './src/index.mjs';
+import { FEATURE_NAMES, NFEAT } from './src/features.mjs';
 import {
   openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
 } from './audio-decode/src/index.mjs';
 
 export { outputExtensionFor };
+
+/** Column index of the 4 Hz modulation energy — the speech cue. */
+const MOD4 = FEATURE_NAMES.indexOf('mod4');
 
 /**
  * Find the `moov` box by walking top-level headers only.
@@ -111,27 +115,53 @@ export function libraryFor(analyses) {
  *
  * Discovery matches episodes against each other, so a single file has nothing
  * to be matched against and no theme to learn from. But the general-music stage
- * is per-episode and should not depend on that: the end credits are the one
- * piece of music a TV episode reliably has, and on this corpus they sit a
- * consistent 35.4-36.3s before the end.
+ * is per-episode and should not depend on that, so it needs an example it can
+ * find on its own: the 10 seconds that are loudest and least syllable-modulated,
+ * scored `level - 30 * mod4`, where mod4 is the 4 Hz modulation energy that
+ * marks speech. That is the audio most obviously *foreground music*, which is
+ * what this stage is looking for — its level gate already assumes the music
+ * worth removing is the foreground kind.
  *
- * It is a weaker exemplar than the theme — mean calibration separation drops
- * from 1.63 to 0.86, so the threshold admits more and the stage proposes
- * roughly twice the audio — which is why it is the fallback and not the
- * default. Better to propose too much, which the user reviews, than to do
- * nothing at all on a single file.
+ * The obvious alternative, the end credits, measures far worse. On this corpus
+ * the credits' mod4 (0.240) sits barely above non-music audio (0.195), so
+ * calibrating on them teaches the discriminant that music may be that
+ * speech-like, and dialogue-under-music starts to pass.
+ *
+ * Measured over 18 episodes against what the theme calibration finds — "music"
+ * is what both agree on, "not music" is what only this proposes:
+ *
+ *   exemplar            separation   music   not music
+ *   theme (reference)         1.63   1417s          0s
+ *   end credits, 45s          0.86   1176s       1930s
+ *   this                      1.81   1029s         66s
+ *
+ * Every window length from 10s to 30s and every weight from 10 to 60 kept the
+ * known false positive out, so this is a plateau rather than a tuned point.
  */
-export function endCreditsExemplar(analyses, opts = {}) {
-  const maxLen = opts.maxLen ?? 45;
+export function foregroundMusicExemplar(analyses, opts = {}) {
+  const wantSec = opts.seconds ?? 10;
+  const mod4Weight = opts.mod4Weight ?? 30;
   const episodes = [];
   for (const a of analyses) {
-    const d = a.duration;
-    if (!(d > 0)) continue;
-    const len = Math.min(maxLen, d / 3);
-    if (len < 4) continue;          // too short to hold an exemplar
-    episodes.push({ id: a.id, start: d - len, end: d - 1, present: true });
+    const F = a.features;
+    if (!F?.feats || !(F.nFrames > 0)) continue;
+    const fps = F.frameRate;
+    // Never take more than half the episode: the rest is the negative class.
+    const n = Math.min(Math.round(wantSec * fps), Math.floor(F.nFrames / 2));
+    if (n < Math.round(4 * fps)) continue;        // too short to hold an example
+
+    let best = 0, bestScore = -Infinity;
+    const step = Math.max(1, Math.round(fps / 2));
+    for (let start = 0; start + n <= F.nFrames; start += step) {
+      let score = 0;
+      for (let t = start; t < start + n; t++) {
+        score += F.feats[t * NFEAT] - mod4Weight * F.feats[t * NFEAT + MOD4];
+      }
+      if (score > bestScore) { bestScore = score; best = start; }
+    }
+    episodes.push({ id: a.id, start: best / fps, end: (best + n) / fps, present: true });
   }
-  return episodes.length ? [{ kind: 'end-credits', episodes }] : [];
+  return episodes.length ? [{ kind: 'foreground-music', episodes }] : [];
 }
 
 /** The detected region of an asset's example episode — what a play button plays. */
@@ -179,8 +209,8 @@ export function musicRangesFor(library, assets, opts = {}) {
       const taken = opts.exclude?.get(id);
       const kept = taken?.length ? segments.filter((s) => !overlapsAny(s, taken)) : segments;
       // separation says how well the exemplar separated music from everything
-      // else in this episode. A weak one is worth telling the user about: the
-      // end-credits fallback measures about half the theme's.
+      // else in this episode, so a weak one is worth surfacing: the single-file
+      // fallback measures near the theme, but that is not guaranteed.
       out.push({ id, segments: kept, ranges: rangesFromSegments(kept), separation: calibration.separation });
     } catch (err) {
       out.push({ id, segments: [], ranges: [], error: err.message });

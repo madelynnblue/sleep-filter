@@ -12,7 +12,7 @@
  */
 
 import {
-  discoverAssets, libraryFor, endCreditsExemplar, musicRangesFor, extractClipWav, exampleRegion,
+  discoverAssets, libraryFor, foregroundMusicExemplar, musicRangesFor, extractClipWav, exampleRegion,
   renderCut, readTitleTag, outputExtensionFor,
 } from './pipeline.mjs';
 
@@ -26,7 +26,7 @@ const state = {
   selected: new Set(),// indices into `shown` that the user wants removed
   previews: new Map(),// play key -> { url } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
-  musicSeed: null,    // 'clips' | 'credits' — what the music stage calibrated on
+  musicSeed: null,    // 'clips' | 'foreground' — what the music stage calibrated on
   shares: null,       // stage weights for the progress meter, learned at runtime
   collapsed: new Set(),
   outDir: null,
@@ -733,10 +733,11 @@ $('topN').onchange = () => autoRun();
 function computeMusic() {
   if (!$('featMusic').checked) { state.music = []; return; }
   // Calibrate on the clips being removed when there are any; otherwise fall back
-  // to the end credits, so this stage runs on a single file too.
+  // to the most foreground-music-like passage each episode has, so this stage
+  // runs on a single file too.
   const clips = calibrationExemplars();
-  const exemplar = clips.length ? clips : endCreditsExemplar(state.analyses);
-  state.musicSeed = clips.length ? 'clips' : 'credits';
+  const exemplar = clips.length ? clips : foregroundMusicExemplar(state.analyses);
+  state.musicSeed = clips.length ? 'clips' : 'foreground';
   if (!exemplar.length) { state.music = []; return; }
   state.music = musicRangesFor(state.library, exemplar, { exclude: themeRanges() }).map((r) => ({
     id: r.id,
@@ -786,11 +787,11 @@ function renderMusic() {
   }
   const ex = calibrationExemplars();
   const picked = [...state.selected].length > 0;
-  if (state.musicSeed === 'credits') {
+  if (state.musicSeed === 'foreground') {
     note.textContent =
-      'No common clip to calibrate on, so this is calibrated on each episode\'s own end credits. ' +
-      'That is a weaker music example than a detected theme, so it flags more than it should — ' +
-      'expect to untick some.';
+      'No common clip to calibrate on, so this is calibrated on the most music-like passage in each ' +
+      'episode — the loudest stretch that is not speech-modulated. That is a weaker example than a ' +
+      'detected theme, so expect to untick some.';
   } else {
     note.textContent = ex.length
       ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
