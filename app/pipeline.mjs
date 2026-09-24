@@ -12,8 +12,10 @@
 
 import { EpisodeAnalyzer, Library, segmentEpisode } from '../src/index.mjs';
 import {
-  openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov,
+  openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
 } from '../audio-decode/src/index.mjs';
+
+export { outputExtensionFor };
 
 /**
  * Find the `moov` box by walking top-level headers only.

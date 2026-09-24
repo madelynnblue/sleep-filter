@@ -23,7 +23,7 @@ import { demuxFlac, muxFlac } from '../src/flac.mjs';
 import { demuxMp3, muxMp3 } from '../src/mp3.mjs';
 import { sniffContainer } from '../src/container.mjs';
 import { demuxMp4 } from '../src/mp4.mjs';
-import { cutAudio } from '../src/cut.mjs';
+import { cutAudio, outputExtensionFor } from '../src/cut.mjs';
 
 const DIR = (process.argv[2] && !process.argv[2].startsWith('--')) ? process.argv[2]
   : join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -68,6 +68,8 @@ function checkFormat(name, bytes, demux, mux, { secondIn, minRate, noMd5Warning 
   console.log(`${name}:`);
   ok(`  sniffed as ${name.toLowerCase()}`, sniffContainer(bytes.subarray(0, 16)) === name.toLowerCase(),
      sniffContainer(bytes.subarray(0, 16)));
+  ok(`  output would be named .${name.toLowerCase()}`,
+     outputExtensionFor(bytes.subarray(0, 16)) === name.toLowerCase());
 
   const d = demux(bytes);
   ok(`  sample rate is sane (${d.track.sampleRate} Hz)`, d.track.sampleRate >= minRate);
@@ -130,6 +132,9 @@ for (const [label, ext, args] of [
   ok(`  codec config was located despite the ${label} sample-entry layout`, d.track.codec === 'mp4a.40.2');
   ok(`  duration is the full ${(d.durationUs / 1e6).toFixed(1)}s`,
      Math.abs(d.durationUs / 1e6 - 30) < 0.5);
+  // the output is audio-only, so it is an m4a however the input was named
+  ok('  output would be named .m4a, not .' + ext,
+     outputExtensionFor(bytes.subarray(0, 16)) === 'm4a');
 
   const { bytes: out } = cutAudio(bytes, [[5, 15]], { mode: 'remove' });
   const cutPath = join(work, `video-cut-${ext}.m4a`);

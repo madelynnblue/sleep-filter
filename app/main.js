@@ -13,6 +13,7 @@
 
 import {
   discoverAssets, musicRangesFor, extractClipWav, exampleRegion, renderCut, readTitleTag,
+  outputExtensionFor,
 } from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -777,10 +778,15 @@ $('export').onclick = async () => {
     for (const [id, ranges] of perFile) {
       const entry = state.files.find((f) => f.id === id);
       if (!entry || !ranges.length) continue;
-      // Output keeps the input's name: the file the user gets back is the same
-      // episode, minus music, and a suffix only makes it harder to line the two
-      // up. The folder is what separates them.
-      plan.push({ entry, ranges, name: entry.file.name });
+      // Keep the input's stem but not its extension. An MP4 that held video
+      // comes back as audio-only, so it is an .m4a now, and a .mov never was
+      // right. The stem is what lines input and output up; the extension says
+      // what the file actually is.
+      const head = new Uint8Array(await entry.file.slice(0, 16).arrayBuffer());
+      plan.push({
+        entry, ranges,
+        name: `${String(entry.file.name).replace(/\.[^./\\]+$/, '')}.${outputExtensionFor(head)}`,
+      });
     }
 
     if (outDir && !await confirmReplacements(outDir, plan.map((p) => p.name))) return;

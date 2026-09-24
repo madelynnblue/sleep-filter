@@ -137,6 +137,22 @@ export function cutAudio(source, ranges, opts = {}) {
       sampleRate: demuxed.track.sampleRate,
       channels: demuxed.track.channels,
       codec: demuxed.track.codec,
+      // What the output actually is, which is not always what came in: an MP4
+      // that held video comes back as an audio-only MP4.
+      container,
+      outputExtension: outputExtensionFor(source),
     },
   };
+}
+
+/**
+ * The extension an output will carry, decided by the container that came in.
+ *
+ * An MP4 output is always audio-only, so it is an m4a whatever the input was
+ * called — a `.mp4` that held video, a `.mov`, a `.m4v`. Single source of truth
+ * so the page can name a file before cutting it, and the cut agrees.
+ */
+export function outputExtensionFor(source) {
+  const container = sniffContainer(source.subarray(0, 16));
+  return container === 'flac' ? 'flac' : container === 'mp3' ? 'mp3' : 'm4a';
 }

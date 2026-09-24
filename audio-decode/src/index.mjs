@@ -29,7 +29,9 @@ export { demuxMp3, muxMp3 } from './mp3.mjs';
 export { decodeWithWebCodecs, decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
 export { readSource } from './source.mjs';
 export { muxAudioMp4 } from './mux.mjs';
-export { cutAudio, selectSamples, normalizeRanges, rangesFromSegments } from './cut.mjs';
+export {
+  cutAudio, selectSamples, normalizeRanges, rangesFromSegments, outputExtensionFor,
+} from './cut.mjs';
 
 const isNode = () => typeof process !== 'undefined' && !!process.versions?.node;
 
