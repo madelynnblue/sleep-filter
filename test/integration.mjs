@@ -145,8 +145,11 @@ const withSegs = segOut.filter((r) => r.segments.length > 0).length;
 // runs close to its decision boundary (calibration separation ~1.4 pooled SD),
 // so marginal episodes flip between "theme only" and "nothing" on small decode
 // differences — feeding 8 kHz mono directly yields segments for all 18, while
-// the 48 kHz path through the internal resampler yields 14. The stage is
-// documented as assistive, and these bounds exist to catch regressions.
+// the 48 kHz path through the internal resampler yielded 14. That gap was the
+// absolute peak floor in segment(), which sat above the theme's own mean score
+// and deleted real cues; it is calibration-relative now, and this path reaches
+// 18 as well. The stage is still assistive, and these bounds exist to catch
+// regressions.
 ok(`segmentation produced segments for ${withSegs}/${segOut.length} episodes`,
    withSegs >= Math.floor(segOut.length * 0.7));
 

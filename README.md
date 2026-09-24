@@ -96,8 +96,14 @@ So the score cannot separate a quiet passage from music, and the false positives
 were exactly that: room tone, low drones, scenes under a music bed. Music-like in
 timbre, far below it in level.
 
-Hence two guards on top of the score:
+Hence three guards on top of the score:
 
+- **A peak floor** — a run must reach 70% of the way from the decision threshold to
+  the mean score of the theme frames. It is expressed *relative to the
+  calibration* because the discriminant score is only defined up to an affine
+  transform: an absolute floor that once meant "no floor" ended up sitting above
+  the theme's own average score and was quietly deleting real music. It kept the
+  stage at 14 of 18 episodes; relative, it reaches 18 of 18.
 - **A level gate** — a proposed cue must be within 8 dB of the level of the music
   exemplars, measured against that episode's own mix so it survives differently
   mastered files. This is also what the goal implies: *music under dialogue is
@@ -176,7 +182,7 @@ Measured on a 19-episode corpus, and asserted by the test suite:
 |---|---|
 | theme discovered | **18 of 19** episodes |
 | cut positions vs independent ground truth | **mean 0.81 s, max 0.83 s** |
-| general-music stage | segments in **14 of 18** episodes |
+| general-music stage | segments in **18 of 18** episodes |
 | level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
 | time per 22-minute episode | ~3.5 s (decode 47%, features 38%, fingerprints 15%) |
 
@@ -205,6 +211,11 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   differences. It is assistive, not automatic.
 - **The general-music thresholds are tuned on 11 hand-labelled segments from 2
   episodes**, so the 8 dB level gate is provisional.
+- **The peak floor's 0.7 is new and has not been checked by ear.** Making it
+  relative roughly doubles what the stage proposes — 729 s to 1487 s across the
+  18 episodes, about 83 s per episode instead of 40 s — and the segments it newly
+  admits have not been audited. If they turn out to be mostly dialogue and room
+  tone, the figure should come down; 0.9 or above loses the cue that prompted it.
 - **Small corpora are materially weaker.** The theme stage is validated on 19
   episodes; run over five, the adaptive peak threshold cannot reject generic
   content and occurrences smear. Bounded now, but the list deserves a closer look

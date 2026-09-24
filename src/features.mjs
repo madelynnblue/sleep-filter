@@ -339,13 +339,31 @@ export function segment(scores, fps, opts = {}) {
     maxFractionOfEpisode = 0.25,
     maxGap = 0.8,      // seconds; bridge gaps up to this
     edgeFrac = 0.35,   // segment edges where the smoothed score crosses this fraction
-    // Minimum peak score. Genuine music cues measure ~1.9-2.9; the one verified
-    // false positive measured 1.098, so a floor here separates them cheaply.
-    minPeak = 0,
+    // Floor on a run's peak score, as a fraction of the way from the decision
+    // threshold (`mid`) to the mean score of the positive exemplars (`posMean`).
+    //
+    // This used to be an absolute constant, and that cannot work. The score is
+    // only defined up to an affine transform — where a genuine cue lands depends
+    // on the weights `calibrate()` happened to fit — so a constant that meant
+    // "effectively off" on one feature set sat ABOVE the theme's own mean score
+    // on the next. At 0, on this corpus (posMean -0.373, mid -2.091), it silently
+    // deleted real music: a 6.1s cue at 14:26 in S02E08 that cleared `mid` by
+    // 1.53 and sat at the 98.8th percentile of its episode.
+    //
+    // Relative instead: 1 demands a cue look more musical than the theme does on
+    // average, 0 disables the floor. 0.7 keeps that cue with margin while still
+    // rejecting runs that barely clear the threshold.
+    peakFrac = 0.7,
+    posMean = null,    // the positive exemplars' mean score, from calibrate()
+    minPeak = null,    // explicit absolute floor; overrides peakFrac. Tests pass -1e9.
   } = opts;
 
   const n = scores.length;
   const thr = mid + bias;
+  // Without a calibration to measure against there is no meaningful floor, so
+  // fall back to none rather than to a constant.
+  const floor = minPeak != null ? minPeak
+    : Number.isFinite(posMean) ? thr + peakFrac * (posMean - mid) : -Infinity;
 
   // median filter (robust to single-frame chatter)
   const med = new Float32Array(n);
@@ -398,7 +416,7 @@ export function segment(scores, fps, opts = {}) {
     // overflows the stack on the long runs a smeared occurrence can produce)
     let peak = -Infinity;
     for (let i = r.a; i <= r.b; i++) if (sm[i] > peak) peak = sm[i];
-    if (peak < minPeak) continue;
+    if (peak < floor) continue;
     const edge = thr - edgeFrac * (peak - thr);
     // Bound each edge at the midpoint of the gap to its neighbour.
     //

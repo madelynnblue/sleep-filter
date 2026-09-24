@@ -301,7 +301,8 @@ export function segmentEpisode(episode, positiveRanges, opts = {}) {
     throw new Error('calibration failed — need at least ~10 positive frames and ~50 negatives');
   }
   const scores = scoreFrames(F.feats, F.nFrames, cal);
-  const segments = segment(scores, F.frameRate, { mid: cal.mid, ...opts });
+  // posMean gives segment() a data-relative peak floor; see peakFrac there.
+  const segments = segment(scores, F.frameRate, { mid: cal.mid, posMean: cal.posMean, ...opts });
   return {
     calibration: cal,
     segments: gateByLevel(segments, F, positiveRanges, opts.levelSlack ?? 0),
