@@ -131,10 +131,14 @@ export async function openAudioFile(source, opts = {}) {
   // ---- ffmpeg fallback ----
   const ff = await loadFfmpeg();
   if (!ff) {
+    // The old wording blamed WebCodecs, which is usually present and not the
+    // problem — the container or codec simply has no demuxer here. Saying so
+    // saves the reader from chasing a decoder they already have.
+    const container = sniffContainer(res.head);
     throw new Error(
-      'no usable decoder backend: WebCodecs is unavailable and the ffmpeg fallback ' +
-      'is not importable (Node-only). In a browser, this container/codec needs a ' +
-      'different decoder.'
+      `cannot read this file: no built-in demuxer handles "${container}", and this ` +
+      'environment has no fallback decoder (the ffmpeg path is Node-only). ' +
+      'Supported: MP4/M4A/MOV, FLAC, MP3, WAV, AIFF.'
     );
   }
   const path = res.path ?? await writeTempFile(bytes, guessExt(res.name));
