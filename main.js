@@ -97,23 +97,48 @@ async function loadTitle(entry) {
   } catch { /* unreadable tags are not worth surfacing */ }
 }
 
+const statusLabel = (f) => (f.status === 'done' ? 'analysed'
+  : f.status === 'running' ? `${((f.progress ?? 0) * 100).toFixed(0)}%`
+  : f.status === 'error' ? `error: ${f.error}`
+  : 'queued');
+
+function fileRow(f) {
+  return `<li data-id="${esc(f.id)}" data-tag="${esc(f.title ?? '')}">` +
+    `${playButton(`ep:${f.id}`, 'Play this episode')}` +
+    `<span class="id">${esc(f.id)}` +
+    (f.title ? `<span class="tag">${esc(f.title)}</span>` : '') + `</span>` +
+    `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
+    `<span class="st ${f.status}">${esc(statusLabel(f))}</span>` +
+    `<button class="x" type="button" data-id="${esc(f.id)}" ` +
+    `title="Remove this file" aria-label="Remove ${esc(f.id)}">×</button></li>`;
+}
+
 function renderFiles() {
-  $('filelist').innerHTML = state.files.map((f) => {
-    const label = f.status === 'done' ? 'analysed'
-      : f.status === 'running' ? `${((f.progress ?? 0) * 100).toFixed(0)}%`
-      : f.status === 'error' ? `error: ${f.error}`
-      : 'queued';
-    return `<li>${playButton(`ep:${f.id}`, 'Play this episode')}` +
-           `<span class="id">${esc(f.id)}` +
-           (f.title ? `<span class="tag">${esc(f.title)}</span>` : '') + `</span>` +
-           `<span class="sz">${(f.file.size / 1e6).toFixed(1)} MB</span>` +
-           `<span class="st ${f.status}">${esc(label)}</span>` +
-           `<button class="x" type="button" data-id="${esc(f.id)}" ` +
-           `title="Remove this file" aria-label="Remove ${esc(f.id)}">×</button></li>`;
-  }).join('');
-  wirePlayButtons($('filelist'));
-  for (const el of $('filelist').querySelectorAll('button.x')) {
-    el.onclick = () => removeFile(el.dataset.id);
+  const list = $('filelist');
+  // This used to rebuild the whole list on every progress message — roughly a
+  // hundred times per episode. That would throw away the player sitting in a
+  // row, stopping whatever the user was listening to while the analysis ran. The
+  // structure only changes when the set of files does (or a title arrives from
+  // the tag); the rest of the time only the status text moves.
+  const ids = state.files.map((f) => f.id);
+  const shown = [...list.children].map((li) => li.dataset.id);
+  const sameSet = ids.length === shown.length && ids.every((id, i) => id === shown[i]);
+  const sameTags = state.files.every((f, i) => list.children[i]?.dataset.tag === (f.title ?? ''));
+
+  if (!sameSet || !sameTags) {
+    stopPlayersIn(list);
+    list.innerHTML = state.files.map(fileRow).join('');
+    wirePlayButtons(list);
+    for (const el of list.querySelectorAll('button.x')) {
+      el.onclick = () => removeFile(el.dataset.id);
+    }
+  } else {
+    state.files.forEach((f, i) => {
+      const st = list.children[i].querySelector('.st');
+      const label = statusLabel(f);
+      if (st.textContent !== label) st.textContent = label;
+      st.className = `st ${f.status}`;
+    });
   }
   renderProgress();
 }
@@ -165,6 +190,8 @@ function resetResults() {
   setStatus('');
   $('verify').hidden = true;
   $('done').hidden = true;
+  // everything is about to be detached, and a detached <audio> keeps sounding
+  stopAudition();
   $('clips').innerHTML = '';
   $('matrix').innerHTML = '';
   $('music').innerHTML = '';
@@ -349,10 +376,12 @@ function renderClips() {
   if (!wantThemes) return;
 
   if (!state.shown.length) {
+    stopPlayersIn($('clips'));
     $('clips').innerHTML = '<li class="empty">No recurring audio found across these files.</li>';
     return;
   }
 
+  stopPlayersIn($('clips'));
   $('clips').innerHTML = state.shown.map((a, i) => {
     const conf = typeof a.meanSim === 'number' ? a.meanSim : null;
     const weak = conf !== null && conf < 0.9;
@@ -393,38 +422,22 @@ function renderClips() {
  * ("theme:0", "music:S01E01:3", "ep:S01E01") that resolves either to a byte
  * range to decode, or to the original file, which the browser streams itself.
  *
- * Playback is the browser's own <audio controls>, in a bar that lives outside
- * every list the render functions rebuild. That placement is the point: the
- * music table is re-rendered on every checkbox toggle, so an <audio> inside it
- * would be destroyed — and stop — exactly while the user is auditioning and
- * deciding. The bar is static markup, so a clip keeps playing while the list
- * around it changes, and scrubbing, seeking and replay come from the platform
- * rather than from buttons we would have to reimplement.
+ * Each thing gets its own <audio controls> — the platform's transport, for free.
+ * Until something is played it shows a ▶ button instead, and the first click
+ * prepares the audio and swaps the real player in where the button was. That
+ * matters because preparing means decoding: doing it for every row up front
+ * would decode the whole season to WAV before the user hears anything. This way
+ * the page only ever holds players for what has actually been auditioned.
  *
- * The row buttons therefore only choose WHAT plays. They are not transports.
+ * Which only works because the render functions stopped rebuilding their lists
+ * for state that is already represented in the DOM. `renderMusic` used to be
+ * called on every segment tick, episode tick and collapse, and `renderFiles` on
+ * every progress message; either would have destroyed a player mid-listen. They
+ * now update the rows they have.
  */
 
 const PLAY_TITLE = 'Play';
-const player = $('player');
-const playerAudio = $('playerAudio');
-const playerLabel = $('playerLabel');
-let audition = { key: null };          // what the bar is currently holding
-
-/** Human label for whatever a key names, shown beside the player. */
-function labelFor(key) {
-  const [kind, a, b] = key.split(':');
-  if (kind === 'ep') return a;
-  if (kind === 'theme') {
-    const asset = state.shown[Number(a)];
-    const region = asset && exampleRegion(asset);
-    return region ? `${region.id} ${fmtTime(region.start)}–${fmtTime(region.end)}` : 'example';
-  }
-  if (kind === 'music') {
-    const seg = state.music.find((x) => x.id === a)?.segments[Number(b)];
-    return seg ? `${a} ${fmtTime(seg.start)}–${fmtTime(seg.end)}` : 'segment';
-  }
-  return '';
-}
+let audition = { key: null };          // the key currently loaded, for highlighting
 
 /** Resolve a play key to the audio it names, or null if that audio is gone. */
 function sourceFor(key) {
@@ -467,68 +480,125 @@ async function urlFor(key) {
   return url;
 }
 
-/** Markup for the row button that loads a key into the bar. Reads the live
- *  player state, so a list re-rendered part-way through still shows it. */
+/**
+ * Markup for one playable thing: the real player if its audio is ready, and a
+ * ▶ button to prepare it if not.
+ */
 function playButton(key, title = PLAY_TITLE) {
-  const on = audition.key === key;
-  return `<button class="play${on ? ' playing' : ''}" type="button" data-key="${key}" ` +
-    `data-title="${title}" title="${on ? 'Replay from the start' : title}">▶</button>`;
+  const url = state.previews.get(key)?.url;
+  if (!url) {
+    return `<button class="play" type="button" data-key="${key}" ` +
+      `data-title="${title}" title="${title}">▶</button>`;
+  }
+  return `<audio class="clip" controls preload="metadata" data-key="${key}" ` +
+    `src="${esc(url)}" title="${esc(title)}"></audio>`;
 }
 
-/** Every play button on the page is wired the same way. */
+/** Every play control on the page is wired the same way. */
 function wirePlayButtons(root) {
   for (const el of root.querySelectorAll('button.play')) {
     el.onclick = () => playKey(el.dataset.key, el);
   }
 }
 
-// Mark which row the bar is holding. Re-queried rather than captured, because
-// the render functions rebuild these buttons underneath us.
+// Highlight whichever row is loaded. Re-queried rather than captured, because
+// the render functions rebuild these rows underneath us.
 function setPlayIcon(key, playing) {
-  for (const el of document.querySelectorAll('button.play')) {
-    const on = playing && el.dataset.key === key;
-    el.classList.toggle('playing', on);
-    el.title = on ? 'Replay from the start' : (el.dataset.title || PLAY_TITLE);
+  for (const el of document.querySelectorAll('[data-key]')) {
+    el.classList.toggle('playing', playing && el.dataset.key === key);
   }
 }
 
-// Let go of the clip the bar is holding. Clicking another row, a re-analysis and
-// a revocation of the URL all funnel through here.
+// Replace a ▶ button with the player it stands for. Done by hand rather than by
+// re-rendering the list, so nothing else in it is touched.
+function mountPlayer(button, key, title, url) {
+  const audio = document.createElement('audio');
+  audio.className = 'clip';
+  audio.controls = true;
+  audio.preload = 'metadata';
+  audio.dataset.key = key;
+  audio.title = title;
+  audio.src = url;
+  button.replaceWith(audio);
+  return audio;
+}
+
+/**
+ * Only one thing sounds at a time.
+ *
+ * Capture phase because media events do not bubble: this is the one listener
+ * that sees every `play` in the document, wherever the player sits.
+ */
+document.addEventListener('play', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLAudioElement) || !el.classList.contains('clip')) return;
+  for (const other of document.querySelectorAll('audio.clip')) {
+    if (other !== el && !other.paused) other.pause();
+  }
+  setPlayIcon(el.dataset.key, true);
+  audition = { key: el.dataset.key };
+}, true);
+
+document.addEventListener('ended', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLAudioElement) || !el.classList.contains('clip')) return;
+  if (audition.key === el.dataset.key) audition = { key: null };
+  setPlayIcon(el.dataset.key, false);
+}, true);
+
+// Stop everything that is sounding. Anything that invalidates a preview funnels
+// through here, so no element is left holding a URL that has been revoked.
 function stopAudition() {
-  if (!audition.key) return;
-  const { key } = audition;
+  for (const el of document.querySelectorAll('audio.clip')) {
+    el.pause();
+    el.currentTime = 0;
+  }
   audition = { key: null };
-  playerAudio.pause();
-  playerAudio.currentTime = 0;   // so the next click starts it over
-  setPlayIcon(key, false);
+  setPlayIcon(null, false);
 }
 
 // Drop prepared previews, releasing their blob URLs. `keep` decides which keys
 // survive; by default none do.
 function clearPreviews(keep = () => false) {
-  if (audition.key && !keep(audition.key)) stopAudition();
   for (const [key, entry] of state.previews) {
     if (keep(key)) continue;
     if (entry.url) URL.revokeObjectURL(entry.url);
     state.previews.delete(key);
   }
-  // If the bar is holding a URL that was just revoked, unload the element rather
-  // than leave a dead source sitting in it.
-  if (playerAudio.src && ![...state.previews.values()].some((e) => e.url === playerAudio.src)) {
-    playerAudio.removeAttribute('src');
-    playerAudio.load();
-    player.hidden = true;
-    playerLabel.textContent = '';
+  // A player whose URL was just revoked has to go back to being a button;
+  // leaving the dead source in it would look playable and do nothing. Detaching
+  // an <audio> does not stop it, so it is silenced first — otherwise it would
+  // keep sounding from a buffer whose URL no longer exists.
+  for (const el of document.querySelectorAll('audio.clip')) {
+    if (state.previews.has(el.dataset.key)) continue;
+    el.pause();
+    el.removeAttribute('src');
+    el.load();
+    el.replaceWith(playButtonEl(el.dataset.key, el.title));
   }
 }
 
-// Reaching the end is the one stop we do not initiate. The bar keeps the clip
-// loaded so it can be replayed; only the highlight goes.
-playerAudio.addEventListener('ended', () => {
-  const { key } = audition;
-  audition = { key: null };
-  if (key) setPlayIcon(key, false);
-});
+/** Silence and unload the players inside a subtree that is about to be rebuilt. */
+function stopPlayersIn(root) {
+  for (const el of root.querySelectorAll('audio.clip')) {
+    el.pause();
+    el.removeAttribute('src');
+    el.load();
+  }
+}
+
+/** A ▶ button element for `key`, as a node. */
+function playButtonEl(key, title = PLAY_TITLE) {
+  const b = document.createElement('button');
+  b.className = 'play';
+  b.type = 'button';
+  b.dataset.key = key;
+  b.dataset.title = title;
+  b.title = title;
+  b.textContent = '▶';
+  b.onclick = () => playKey(key, b);
+  return b;
+}
 
 async function playKey(key, button) {
   if (state.previews.get(key)?.loading) return;
@@ -536,6 +606,7 @@ async function playKey(key, button) {
   let url = state.previews.get(key)?.url;
   if (!url) {
     state.previews.set(key, { loading: true });
+    const title = button.dataset.title || PLAY_TITLE;
     button.textContent = '…';
     button.disabled = true;
     try {
@@ -547,25 +618,25 @@ async function playKey(key, button) {
       button.title = `Could not load: ${err.message}`;
       return;
     }
-    button.disabled = false;
+    // The list may have been rebuilt while that decoded, so re-find the button
+    // by key instead of trusting the element that was clicked.
+    const target = document.querySelector(`button.play[data-key="${key}"]`) || button;
+    const audio = mountPlayer(target, key, title, url);
+    try {
+      await audio.play();
+    } catch (err) {
+      audio.title = `Could not play: ${err.message}`;
+    }
+    return;
   }
 
-  // The list may have been rebuilt while that decoded, so re-find the button by
-  // key rather than trusting the element that was clicked.
-  const fresh = document.querySelector(`button.play[data-key="${key}"]`);
-  if (fresh) fresh.textContent = '▶';
-
-  if (playerAudio.src === url) playerAudio.currentTime = 0;   // replay from the top
-  else playerAudio.src = url;
-  player.hidden = false;
-  playerLabel.textContent = labelFor(key);
-  audition = { key };
-  setPlayIcon(key, true);
-  try {
-    await playerAudio.play();
-  } catch (err) {
-    stopAudition();
-    playerLabel.textContent = `Could not play: ${err.message}`;
+  // Defensive: a prepared key renders as a player rather than a button, so this
+  // is not normally reachable. It exists so that a stray button for audio we
+  // already have still plays instead of doing nothing.
+  const cached = document.querySelector(`audio.clip[data-key="${key}"]`);
+  if (cached) {
+    cached.currentTime = 0;              // replay from the top
+    try { await cached.play(); } catch { /* the control reports its own errors */ }
   }
 }
 
@@ -656,12 +727,40 @@ function computeMusic() {
   }));
 }
 
+/** Seconds this episode will actually have removed. */
+function episodeSeconds(ep) {
+  return ep.segments.reduce((n, s, i) => n + (ep.enabled.has(i) ? s.duration : 0), 0);
+}
+
+/**
+ * Refresh one episode's summary row in place.
+ *
+ * Ticking one segment moves only that episode's tick and its seconds, so
+ * rebuilding the table for it — which is what used to happen — was both wasteful
+ * and destructive: it removed every player in the table, so deciding about a
+ * segment stopped the one you were listening to.
+ */
+function updateEpisodeRow(id) {
+  const ep = state.music.find((x) => x.id === id);
+  const row = document.querySelector(`#music tr.ep[data-id="${id}"]`);
+  if (!ep || !row) return;
+  const total = ep.segments.length;
+  const pick = row.querySelector('.epPick');
+  if (pick) {
+    pick.checked = total > 0 && ep.enabled.size === total;
+    pick.disabled = total === 0;
+  }
+  const secs = row.querySelector('.removing');
+  if (secs) secs.textContent = total ? `${episodeSeconds(ep).toFixed(0)}s` : '—';
+}
+
 function renderMusic() {
   const note = $('musicNote');
   const el = $('music');
 
   if (!$('featMusic').checked) {
     note.textContent = 'General music removal is off.';
+    stopPlayersIn(el);
     el.innerHTML = '';
     return;
   }
@@ -673,39 +772,39 @@ function renderMusic() {
       'boundary, so some segments may be wrong.'
     : 'General music needs at least one music example to calibrate on, and none was found.';
 
-  if (!state.music.length) { el.innerHTML = ''; return; }
+  if (!state.music.length) { stopPlayersIn(el); el.innerHTML = ''; return; }
 
   const head = '<thead><tr><th class="pick"></th><th>episode</th><th>segments</th><th>removing</th></tr></thead>';
   let rows = '';
 
   for (const ep of state.music) {
     const total = ep.segments.length;
-    const on = ep.enabled.size;
-    const secs = ep.segments.reduce((n, s, i) => n + (ep.enabled.has(i) ? s.duration : 0), 0);
     const collapsed = state.collapsed.has(ep.id);
 
-    rows += `<tr class="ep${total ? '' : ' empty'}">` +
+    rows += `<tr class="ep${total ? '' : ' empty'}" data-id="${ep.id}">` +
       `<td class="pick"><input type="checkbox" class="epPick" data-id="${ep.id}" ` +
-        `${total && on === total ? 'checked' : ''} ${total ? '' : 'disabled'}></td>` +
+        `${total && ep.enabled.size === total ? 'checked' : ''} ${total ? '' : 'disabled'}></td>` +
       `<td><button class="twisty" data-id="${ep.id}" ${total ? '' : 'disabled'}>` +
         `${total ? (collapsed ? '▸' : '▾') : '·'}</button>${ep.id}</td>` +
       `<td>${total || (ep.error ? 'failed' : 'none')}</td>` +
-      `<td>${total ? `${secs.toFixed(0)}s` : '—'}</td></tr>`;
+      `<td class="removing">${total ? `${episodeSeconds(ep).toFixed(0)}s` : '—'}</td></tr>`;
 
-    if (!collapsed && total) {
-      ep.segments.forEach((s, i) => {
-        rows += `<tr class="seg"><td class="pick">` +
-          `<input type="checkbox" class="segPick" data-id="${ep.id}" data-i="${i}" ` +
-          `${ep.enabled.has(i) ? 'checked' : ''}></td>` +
-          `<td colspan="3"><span class="segno" ` +
-          `title="segment ${i + 1} of ${total} in ${ep.id}">#${i + 1}</span> ` +
-          `${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
-          ` ${fmtTime(s.start)} – ${fmtTime(s.end)}` +
-          ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
-      });
-    }
+    // Every segment row is always rendered; collapsing hides them with a class
+    // rather than dropping them, so a player inside one is never destroyed by
+    // the twisty.
+    ep.segments.forEach((s, i) => {
+      rows += `<tr class="seg${collapsed ? ' hidden' : ''}" data-id="${ep.id}" data-i="${i}"><td class="pick">` +
+        `<input type="checkbox" class="segPick" data-id="${ep.id}" data-i="${i}" ` +
+        `${ep.enabled.has(i) ? 'checked' : ''}></td>` +
+        `<td colspan="3"><span class="segno" ` +
+        `title="segment ${i + 1} of ${total} in ${ep.id}">#${i + 1}</span> ` +
+        `${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
+        ` ${fmtTime(s.start)} – ${fmtTime(s.end)}` +
+        ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
+    });
   }
 
+  stopPlayersIn(el);
   el.innerHTML = head + `<tbody>${rows}</tbody>`;
   wirePlayButtons(el);
 
@@ -714,21 +813,28 @@ function renderMusic() {
       const ep = state.music.find((x) => x.id === box.dataset.id);
       const i = Number(box.dataset.i);
       if (box.checked) ep.enabled.add(i); else ep.enabled.delete(i);
-      renderMusic();
+      updateEpisodeRow(ep.id);
     };
   });
   el.querySelectorAll('.epPick').forEach((box) => {
     box.onchange = () => {
       const ep = state.music.find((x) => x.id === box.dataset.id);
       ep.enabled = box.checked ? new Set(ep.segments.map((_, i) => i)) : new Set();
-      renderMusic();
+      for (const seg of el.querySelectorAll(`.segPick[data-id="${box.dataset.id}"]`)) {
+        seg.checked = box.checked;
+      }
+      updateEpisodeRow(ep.id);
     };
   });
   el.querySelectorAll('.twisty').forEach((b) => {
     b.onclick = () => {
       const id = b.dataset.id;
-      if (state.collapsed.has(id)) state.collapsed.delete(id); else state.collapsed.add(id);
-      renderMusic();
+      const nowCollapsed = !state.collapsed.has(id);
+      if (nowCollapsed) state.collapsed.add(id); else state.collapsed.delete(id);
+      b.textContent = nowCollapsed ? '▸' : '▾';
+      for (const row of el.querySelectorAll(`tr.seg[data-id="${id}"]`)) {
+        row.classList.toggle('hidden', nowCollapsed);
+      }
     };
   });
 }
