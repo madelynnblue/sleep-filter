@@ -283,6 +283,28 @@ const ENTRY_CODEC = {
   twos: 'pcm-s16be', sowt: 'pcm-s16le', lpcm: 'pcm',
 };
 
+/**
+ * Find a codec-config box inside an AudioSampleEntry, whatever layout it uses.
+ *
+ * Children do not always start at the same offset. The standard layout puts them
+ * 28 bytes in; QuickTime's version-1 sound description adds four more 32-bit
+ * fields first, and QuickTime also sometimes wraps the config in a `wave` box.
+ * Both are common in .mov files, and assuming the standard offset silently
+ * yields no codec string rather than an error — which reads downstream as "no
+ * usable audio track".
+ *
+ * Scanning is safe here: the entry is a couple of hundred bytes and a candidate
+ * has to look like a real box (matching fourcc AND a size that fits).
+ */
+function findConfigBox(buf, entry, type) {
+  for (let p = entry.payload + 28; p + 8 <= entry.end; p++) {
+    if (fourcc(buf, p + 4) !== type) continue;
+    const size = u32(buf, p);
+    if (size >= 8 && p + size <= entry.end) return { type, start: p, payload: p + 8, end: p + size };
+  }
+  return null;
+}
+
 function parseAudioSampleEntry(buf, entry) {
   // AudioSampleEntry: 8 reserved+dri, 8 version/revision/vendor,
   // 2 channelcount, 2 samplesize, 2 predefined, 2 reserved, 4 samplerate(16.16)
@@ -290,13 +312,12 @@ function parseAudioSampleEntry(buf, entry) {
   const channels = u16(buf, o + 16);
   const sampleSize = u16(buf, o + 18);
   const sampleRate = u32(buf, o + 24) >>> 16;
-  const childStart = o + 28;
 
   let codec = ENTRY_CODEC[entry.type] ?? null;
   let description = null;
   let ascSampleRate = null, ascChannels = null;
 
-  const esds = findBox(buf, childStart, entry.end, 'esds');
+  const esds = findConfigBox(buf, entry, 'esds');
   if (esds) {
     const { objectTypeIndication, asc } = parseEsds(buf, esds.payload, esds.end);
     if (asc && asc.length) {
@@ -311,7 +332,7 @@ function parseAudioSampleEntry(buf, entry) {
     if (!codec && objectTypeIndication === 0x40) codec = 'mp4a.40.2';
   }
   // dOps / dfLa also carry config; for now report the codec and let the caller decide
-  const dOps = findBox(buf, childStart, entry.end, 'dOps');
+  const dOps = findConfigBox(buf, entry, 'dOps');
   if (dOps && !description) description = buf.slice(dOps.payload + 4, dOps.end);
 
   return {

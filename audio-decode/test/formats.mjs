@@ -22,6 +22,8 @@ import { homedir, tmpdir } from 'node:os';
 import { demuxFlac, muxFlac } from '../src/flac.mjs';
 import { demuxMp3, muxMp3 } from '../src/mp3.mjs';
 import { sniffContainer } from '../src/container.mjs';
+import { demuxMp4 } from '../src/mp4.mjs';
+import { cutAudio } from '../src/cut.mjs';
 
 const DIR = (process.argv[2] && !process.argv[2].startsWith('--')) ? process.argv[2]
   : join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -102,6 +104,41 @@ function checkFormat(name, bytes, demux, mux, { secondIn, minRate, noMd5Warning 
 checkFormat('FLAC', fixtures.flac, demuxFlac, muxFlac,
   { secondIn: 60, minRate: 8000, noMd5Warning: true });
 checkFormat('MP3', fixtures.mp3, demuxMp3, muxMp3, { secondIn: 60, minRate: 8000 });
+
+/* -------------------------------------------------------------- video -- */
+//
+// Dropping a video in is a normal thing to do, and it needs no special path: the
+// audio track is an ordinary MP4 audio track and the video track is skipped. The
+// two layouts differ though — QuickTime's version-1 sound description puts the
+// codec config 16 bytes further into the sample entry than the standard layout,
+// and missing it yields no codec string rather than an error. Both are checked.
+for (const [label, ext, args] of [
+  ['MP4', 'mp4', []],
+  ['MOV', 'mov', ['-f', 'mov']],
+]) {
+  const vid = join(work, `video.${ext}`);
+  const r = spawnSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi',
+    '-i', 'testsrc=size=160x120:rate=10', '-i', join(DIR, source),
+    '-t', '30', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'copy', '-shortest',
+    ...args, vid], { encoding: 'utf8' });
+  if (r.status !== 0) { console.log(`SKIP: could not build a ${label} video fixture`); continue; }
+
+  console.log(`${label} with a video track:`);
+  const bytes = new Uint8Array(readFileSync(vid));
+  const d = demuxMp4(bytes);
+  ok(`  audio track found alongside the video (${d.track.codec})`, !!d.track.codec);
+  ok(`  codec config was located despite the ${label} sample-entry layout`, d.track.codec === 'mp4a.40.2');
+  ok(`  duration is the full ${(d.durationUs / 1e6).toFixed(1)}s`,
+     Math.abs(d.durationUs / 1e6 - 30) < 0.5);
+
+  const { bytes: out } = cutAudio(bytes, [[5, 15]], { mode: 'remove' });
+  const cutPath = join(work, `video-cut-${ext}.m4a`);
+  writeFileSync(cutPath, out);
+  const dur = probeDuration(cutPath);
+  ok(`  cutting the audio out yields valid audio (${dur}s)`,
+     Number.isFinite(dur) && Math.abs(dur - 20) < 0.4);
+  console.log('');
+}
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
