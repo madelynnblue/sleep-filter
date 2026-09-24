@@ -22,6 +22,9 @@ code { background:var(--panel); padding:.1rem .35rem; border-radius:4px; }
 .drop:hover { border-color:#3d4650; }
 .drop.over { border-color:var(--accent); background:#1f2530; }
 .drop p { margin:.2rem 0; pointer-events:none; }
+/* what the page can actually open — deliberately the last thing in the box,
+   so it reads as reference rather than as the instruction */
+.drop .formats { color:var(--dim); font-size:.8rem; line-height:1.4; }
 
 button { background:var(--accent); color:#0d1117; border:0; border-radius:6px;
   padding:.5rem .9rem; font:inherit; font-weight:600; cursor:pointer; }
