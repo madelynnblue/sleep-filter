@@ -17,6 +17,28 @@ import {
 } from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
+
+/**
+ * The stage split the progress meter uses, remembered between visits.
+ *
+ * It is not the same in a browser as under Node — WebCodecs hands back one frame
+ * at a time from another thread while the ffmpeg fallback spawns a process — so
+ * the figures in `episode.mjs` can only ever be a starting point. It is also the
+ * one thing that cannot be learned before it is needed: the first file of a
+ * session is analysed before any timing exists, and for a single-file run that
+ * is the entire run. Keeping it means the second run onwards is right.
+ */
+const SHARES_KEY = 'sleep-filter.stage-shares.v1';
+function storedShares() {
+  try {
+    const { shares } = JSON.parse(localStorage.getItem(SHARES_KEY) ?? 'null') ?? {};
+    // A decode share of zero would freeze the meter for the whole first stage.
+    return shares && shares.decode > 0 ? shares : null;
+  } catch {
+    return null;                      // no storage, or something else wrote the key
+  }
+}
+
 const state = {
   files: [],          // { id, file, status, progress, error }
   analyses: [],
@@ -27,7 +49,8 @@ const state = {
   previews: new Map(),// play key -> { url } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
   musicSeed: null,    // 'clips' | 'foreground' — what the music stage calibrated on
-  shares: null,       // stage weights for the progress meter, learned at runtime
+  shares: storedShares(),  // stage weights for the progress meter, measured at runtime
+  sharesMeasured: false,   // whether this session has logged what it measured
   collapsed: new Set(),
   outDir: null,
 };
@@ -257,14 +280,39 @@ function setStatus(text, isError = false) {
  * finished file reports its own per-stage times; the next workers get weighted by
  * those instead.
  */
-function learnShares(timings) {
+function learnShares(timings, backend) {
   if (!timings) return;
   const stages = ['decode', 'chroma', 'fingerprints', 'features'];
   const total = stages.reduce((s, k) => s + (timings[k] > 0 ? timings[k] : 0), 0);
   if (!(total > 0)) return;                 // nothing measured: keep what we have
+  const measured = {};
+  for (const k of stages) measured[k] = (timings[k] > 0 ? timings[k] : 0) / total;
+
+  // Smooth rather than take the last file: one file's timings are noisy (a
+  // background process, a cold cache) and a single odd file should not throw the
+  // meter off for the rest of the session.
+  const prior = state.shares;
+  const alpha = 0.5;
   const next = {};
-  for (const k of stages) next[k] = (timings[k] > 0 ? timings[k] : 0) / total;
+  for (const k of stages) next[k] = prior?.[k] == null ? measured[k] : (1 - alpha) * prior[k] + alpha * measured[k];
   state.shares = next;
+
+  // Keep it. A single-file run gets no chance to use what it just learned, and
+  // the browser's split is nothing like the one measured under Node, so without
+  // this the meter is wrong on the first run of every session — which is how
+  // most people use it.
+  try {
+    localStorage.setItem(SHARES_KEY, JSON.stringify({ backend: backend ?? null, shares: next }));
+  } catch { /* private mode, or storage disabled: the session's own value still applies */ }
+
+  if (!state.sharesMeasured) {
+    state.sharesMeasured = true;
+    const pct = (v) => `${(v * 100).toFixed(0)}%`;
+    console.info(
+      `[sleep filter] measured stage split on ${backend ?? 'unknown'} backend: ` +
+      stages.map((k) => `${k} ${pct(next[k])}`).join(', ') +
+      ' — the progress meter now uses this.');
+  }
 }
 
 // How many episodes to analyse at once. Cores bound it because the work is
@@ -302,7 +350,7 @@ async function analyzePool() {
         if (m.type === 'progress') { entry.progress = m.progress ?? 0; renderFiles(); }
         else if (m.type === 'done') {
           entry.status = 'done'; entry.progress = 1;
-          learnShares(m.analysis?.timings);
+          learnShares(m.analysis?.timings, m.analysis?.backend);
           finish(m.analysis);
         }
         else if (m.type === 'error') { entry.status = 'error'; entry.error = m.message; finish(null); }

@@ -77,14 +77,19 @@ export async function analyzeOne(source, id, opts = {}) {
     analyzer.addChunk(chunk);
     opts.onProgress?.(analyzer.progress);
   }
+  // Reading, demuxing and decoding end here, so the decode span has to be taken
+  // BEFORE finish() — measuring it at the end (as this did) swallows the
+  // features and fingerprints passes and reports the whole wall clock as
+  // "decode". That is not a cosmetic error: the caller learns each backend's
+  // real stage split from this number, so it was teaching the meter that decode
+  // is ~66% of the work when it is ~49%, and every file after the first ran on
+  // a corrupted model.
+  const decodeMs = performance.now() - t0;
   // finish() must be given onProgress too: decode is only part of the work, so
   // without this the meter stops at the decode share and jumps to 100 when the
   // worker's 'done' message lands.
   const analysis = analyzer.finish({ onProgress: opts.onProgress });
-  // Reading, demuxing and decoding. Reported so the caller can learn what the
-  // decode share actually is on this backend rather than trusting a figure
-  // measured elsewhere — WebCodecs and ffmpeg are nothing alike here.
-  analyzer.timings.decode = performance.now() - t0;
+  analyzer.timings.decode = decodeMs;
   analysis.timings = analyzer.timings;
   analysis.info = info;
   analysis.backend = backend;
