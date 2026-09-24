@@ -12,8 +12,8 @@
  */
 
 import {
-  discoverAssets, musicRangesFor, extractClipWav, exampleRegion, renderCut, readTitleTag,
-  outputExtensionFor,
+  discoverAssets, libraryFor, endCreditsExemplar, musicRangesFor, extractClipWav, exampleRegion,
+  renderCut, readTitleTag, outputExtensionFor,
 } from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +26,7 @@ const state = {
   selected: new Set(),// indices into `shown` that the user wants removed
   previews: new Map(),// play key -> { url } | { loading: true }
   music: [],          // [{ id, segments, enabled:Set<index> }]
+  musicSeed: null,    // 'clips' | 'credits' — what the music stage calibrated on
   shares: null,       // stage weights for the progress meter, learned at runtime
   collapsed: new Set(),
   outDir: null,
@@ -115,6 +116,11 @@ function fileRow(f) {
 
 function renderFiles() {
   const list = $('filelist');
+  // Common clips are cross-episode by definition; with one file there is nothing
+  // to match against, so say so rather than offering a control that cannot work.
+  const enoughForClips = state.files.length >= 2;
+  $('featThemes').disabled = !enoughForClips;
+  $('featThemes').title = enoughForClips ? '' : 'Common clips need at least two files';
   // This used to rebuild the whole list on every progress message — roughly a
   // hundred times per episode. That would throw away the player sitting in a
   // row, stopping whatever the user was listening to while the analysis ran. The
@@ -339,9 +345,14 @@ async function runDetection() {
   }
   setStatus('Finding music…');
 
-  // discovery always runs: even with themes off, general music needs a music
-  // exemplar to calibrate its discriminant on.
-  const { library, assets } = discoverAssets(state.analyses, {});
+  // Common clips are audio that repeats ACROSS episodes, so one file cannot
+  // produce any by definition; discovery is skipped rather than run to return
+  // nothing. General music is per-episode and runs either way — falling back to
+  // the end credits for an exemplar when there is no theme to calibrate on.
+  const canDiscover = state.analyses.length >= 2;
+  const { library, assets } = canDiscover
+    ? discoverAssets(state.analyses, {})
+    : { library: libraryFor(state.analyses), assets: [] };
   state.library = library;
   state.assets = assets;
   state.shown = wantThemes ? assets.slice(0, topN) : [];
@@ -360,7 +371,8 @@ async function runDetection() {
 
   const failed = state.files.filter((f) => f.status === 'error').length;
   const bits = [`${state.analyses.length} file(s) analysed`];
-  if (wantThemes) bits.push(`${state.shown.length} clip(s) found`);
+  if (wantThemes && canDiscover) bits.push(`${state.shown.length} clip(s) found`);
+  else if (wantThemes) bits.push('common clips need two files or more');
   if (failed) bits.push(`${failed} failed`);
   setStatus(bits.join(' · '));
 }
@@ -377,7 +389,10 @@ function renderClips() {
 
   if (!state.shown.length) {
     stopPlayersIn($('clips'));
-    $('clips').innerHTML = '<li class="empty">No recurring audio found across these files.</li>';
+    $('clips').innerHTML = state.analyses.length < 2
+      ? '<li class="empty">Common clips are audio that repeats across episodes, so this needs at ' +
+        'least two files. General music still runs, below.</li>'
+      : '<li class="empty">No recurring audio found across these files.</li>';
     return;
   }
 
@@ -717,13 +732,18 @@ $('topN').onchange = () => autoRun();
  */
 function computeMusic() {
   if (!$('featMusic').checked) { state.music = []; return; }
-  const ex = calibrationExemplars();
-  if (!ex.length) { state.music = []; return; }
-  state.music = musicRangesFor(state.library, ex, { exclude: themeRanges() }).map((r) => ({
+  // Calibrate on the clips being removed when there are any; otherwise fall back
+  // to the end credits, so this stage runs on a single file too.
+  const clips = calibrationExemplars();
+  const exemplar = clips.length ? clips : endCreditsExemplar(state.analyses);
+  state.musicSeed = clips.length ? 'clips' : 'credits';
+  if (!exemplar.length) { state.music = []; return; }
+  state.music = musicRangesFor(state.library, exemplar, { exclude: themeRanges() }).map((r) => ({
     id: r.id,
     segments: r.segments,
     enabled: new Set(r.segments.map((_, i) => i)),
     error: r.error,
+    separation: r.separation,
   }));
 }
 
@@ -766,11 +786,18 @@ function renderMusic() {
   }
   const ex = calibrationExemplars();
   const picked = [...state.selected].length > 0;
-  note.textContent = ex.length
-    ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
-      'Untick anything you want to keep. This stage is assistive — it runs close to its decision ' +
-      'boundary, so some segments may be wrong.'
-    : 'General music needs at least one music example to calibrate on, and none was found.';
+  if (state.musicSeed === 'credits') {
+    note.textContent =
+      'No common clip to calibrate on, so this is calibrated on each episode\'s own end credits. ' +
+      'That is a weaker music example than a detected theme, so it flags more than it should — ' +
+      'expect to untick some.';
+  } else {
+    note.textContent = ex.length
+      ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
+        'Untick anything you want to keep. This stage is assistive — it runs close to its decision ' +
+        'boundary, so some segments may be wrong.'
+      : 'General music needs at least one music example to calibrate on, and none was found.';
+  }
 
   if (!state.music.length) { stopPlayersIn(el); el.innerHTML = ''; return; }
 

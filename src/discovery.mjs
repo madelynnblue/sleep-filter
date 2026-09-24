@@ -454,7 +454,15 @@ export function discover(episodes, opts = {}) {
     return m;
   });
 
-  const minSupport = Math.max(2, minSupportCount);
+  // An absolute floor has to account for how many episodes there are. Requiring
+  // three episodes' support cannot be met at all by a two- or three-file run,
+  // however clean the match — and at three files the theme IS located cleanly
+  // (11.1s span, 632 mean votes) while only two episodes carry it, because the
+  // third is legitimately marked absent.
+  //
+  // So on a tiny corpus a majority is enough; from four files up this is exactly
+  // the old constant of 3, leaving full-season behaviour untouched.
+  const minSupport = Math.max(2, Math.min(minSupportCount, Math.ceil(N * 0.6)));
   const cfg = { minVotes, refineFrames, minDensity, minSupport, maxPeaksPerPair, absentVoteFrac,
                 maxOccurrenceSeconds };
 

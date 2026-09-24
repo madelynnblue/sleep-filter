@@ -93,11 +93,45 @@ export async function analyzeOne(source, id, opts = {}) {
  * @param {number} [opts.topN] keep only the N most prevalent assets
  */
 export function discoverAssets(analyses, opts = {}) {
-  const library = new Library();
-  for (const a of analyses) library.add(a);
+  const library = libraryFor(analyses);
   const discovery = library.discover(opts.discover);
   const assets = library.refine(discovery.candidates, opts.refine);
   return { library, discovery, assets, topN: opts.topN ?? assets.length };
+}
+
+/** A Library over already-analysed episodes, without running discovery. */
+export function libraryFor(analyses) {
+  const library = new Library();
+  for (const a of analyses) library.add(a);
+  return library;
+}
+
+/**
+ * What the general-music stage calibrates on when there is no common clip.
+ *
+ * Discovery matches episodes against each other, so a single file has nothing
+ * to be matched against and no theme to learn from. But the general-music stage
+ * is per-episode and should not depend on that: the end credits are the one
+ * piece of music a TV episode reliably has, and on this corpus they sit a
+ * consistent 35.4-36.3s before the end.
+ *
+ * It is a weaker exemplar than the theme — mean calibration separation drops
+ * from 1.63 to 0.86, so the threshold admits more and the stage proposes
+ * roughly twice the audio — which is why it is the fallback and not the
+ * default. Better to propose too much, which the user reviews, than to do
+ * nothing at all on a single file.
+ */
+export function endCreditsExemplar(analyses, opts = {}) {
+  const maxLen = opts.maxLen ?? 45;
+  const episodes = [];
+  for (const a of analyses) {
+    const d = a.duration;
+    if (!(d > 0)) continue;
+    const len = Math.min(maxLen, d / 3);
+    if (len < 4) continue;          // too short to hold an exemplar
+    episodes.push({ id: a.id, start: d - len, end: d - 1, present: true });
+  }
+  return episodes.length ? [{ kind: 'end-credits', episodes }] : [];
 }
 
 /** The detected region of an asset's example episode — what a play button plays. */
@@ -141,10 +175,13 @@ export function musicRangesFor(library, assets, opts = {}) {
       // exemplars. Music the user wants gone is foreground music; the false
       // positives are quiet passages that merely resemble it in timbre, which is
       // the audio that should stay.
-      const { segments } = segmentEpisode(ep, ranges, { levelSlack: 8, ...(opts.segment ?? {}) });
+      const { segments, calibration } = segmentEpisode(ep, ranges, { levelSlack: 8, ...(opts.segment ?? {}) });
       const taken = opts.exclude?.get(id);
       const kept = taken?.length ? segments.filter((s) => !overlapsAny(s, taken)) : segments;
-      out.push({ id, segments: kept, ranges: rangesFromSegments(kept) });
+      // separation says how well the exemplar separated music from everything
+      // else in this episode. A weak one is worth telling the user about: the
+      // end-credits fallback measures about half the theme's.
+      out.push({ id, segments: kept, ranges: rangesFromSegments(kept), separation: calibration.separation });
     } catch (err) {
       out.push({ id, segments: [], ranges: [], error: err.message });
     }

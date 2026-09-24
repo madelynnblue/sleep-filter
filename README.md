@@ -90,6 +90,15 @@ A different problem: no repetition to lean on. Instead it learns what music look
 like *in this show*, using the detected theme as the positive example, and scores
 every frame with a linear discriminant.
 
+That is chicken-and-egg, because the theme itself comes from matching episodes
+against each other: **common clips need at least two files** by construction,
+while this stage is per-episode and must run on any number of them. With no theme
+to learn from it calibrates on the episode's own end credits instead — on this
+corpus they sit a consistent 35.4–36.3 s before the end and are music in every
+episode. That is a weaker example: mean calibration separation falls from 1.63 to
+0.86, so the threshold admits more and roughly twice as much audio is proposed.
+It is the fallback rather than the default, and the page says when it is in use.
+
 Measured on real episodes, `logRms` earns almost no weight — its variation
 *within* a class (silence through speech) dwarfs the difference between classes.
 So the score cannot separate a quiet passage from music, and the false positives
@@ -231,7 +240,15 @@ asserted **bit-identical** rather than close, because chroma positions every cut
 - **Small corpora are materially weaker.** The theme stage is validated on 19
   episodes; run over five, the adaptive peak threshold cannot reject generic
   content and occurrences smear. Bounded now, but the list deserves a closer look
-  on a small run.
+  on a small run. Concretely: at three files a theme is still located cleanly
+  (11.1 s span) but only two episodes carry it, so a majority is accepted there;
+  at **two files the votes smear across 100–200 s and nothing is found at all**.
+  That is the 90 s guard rejecting a smear rather than a miss, and it is left
+  that way on purpose — accepting it would cut minutes of dialogue.
+- **The end-credits fallback assumes end credits are music.** It is right for
+  this material and wrong for, say, a podcast that talks to the end, where the
+  seed would be speech and the calibration would be meaningless. It only applies
+  when no common clip was found.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
 - **Music under dialogue is out of scope by design** and is left in place.
