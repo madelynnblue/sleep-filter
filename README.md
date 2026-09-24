@@ -1,62 +1,234 @@
-# music-analysis
+# sleep filter
 
-Find and measure music in audio, entirely client-side. No server, no WASM, no
-dependencies.
+Finds the music in TV episodes and cuts it out, so what's left is easier to fall
+asleep to. Runs entirely in the browser — no server, no upload, no dependencies.
 
-**Input is raw audio — `Float32Array` — never an encoded file.** Decoding lives
-in a separate package. This one has no idea what a container or a codec is,
-which is what lets it run unchanged in Node, a Web Worker, or a page.
+Music is what wakes you up; dialogue is not. So this finds the music, lets you
+audition every candidate and untick the ones that aren't music you want gone, and
+writes new files with the rest removed.
 
-Two things it does:
+## What it does
 
-1. **Discovery** — find audio that *repeats* across episodes (the title theme,
-   recurring stings). Confidence comes from cross-episode consensus.
-2. **Segmentation** — find music in a *single* episode without needing it to
-   repeat (credits, one-off interludes, diegetic songs). No corroboration, so
-   lower confidence by construction.
+Drop in some episodes. It finds two different kinds of music:
 
-## The boundary
+- **Common clips** — audio that *repeats across episodes*: the title theme, the
+  end credits, recurring stings. Confirmed by cross-episode consensus, so this is
+  the high-confidence stage.
+- **General music** — music inside a *single* episode that never repeats: one-off
+  interludes, diegetic songs, musical credits. No corroboration is possible, so
+  this stage is assistive and will be wrong sometimes.
+
+You review both, audition anything with a play button, and untick what isn't
+music you want gone — the removal uses only what stays ticked. Then it cuts those
+spans out and writes new files.
+
+## How it works
 
 ```
-@you/audio-decode          encoded bytes / File  ->  AudioChunk stream
-        │                  (containers, codecs; WebCodecs + demuxer, ffmpeg.wasm fallback)
-        ▼  AudioChunk
-music-analysis             AudioChunk  ->  features, assets, segments
-                           (pure; no I/O, no DOM, no Node)
+file ─► demux ─► decode ─┬─► PHASE 1  per episode, in workers
+                         │     chroma · landmarks · features
+                         │
+                         └─► PHASE 2  cross-episode, main thread
+                               discovery ─► refine ─► segmentation ─► cut ─► mux
 ```
 
-Downmix and resampling live **here**, not in the decoder: the decoder stays a
-dumb container/codec layer, and WebCodecs cannot resample anyway.
+Two phases because phase 1 is heavy and embarrassingly parallel — one worker per
+file — while phase 2 needs every episode at once and takes seconds. That split is
+what lets the page show a moving progress bar instead of freezing.
 
-## Input contract
+### 1. Reading the file
 
-Mirrors `WebCodecs.AudioData`, so a decoder hands chunks over with almost no
-transformation:
+Everything is normalised to **8 kHz mono** as it streams in. That is the analysis
+rate: chroma lives below 2 kHz, the speech cue below 4 kHz, and 8 kHz keeps a
+22-minute episode at ~42 MB instead of the ~500 MB it would occupy as 48 kHz
+stereo float. Downmixing and resampling happen here rather than in the decoder,
+which stays a dumb container/codec layer.
 
-```ts
-interface AudioChunk {
-  sampleRate: number;
-  numberOfFrames: number;
-  numberOfChannels: number;
-  format: 'f32-planar' | 'f32';        // planar is the fast path
-  data: Float32Array[] | Float32Array; // data[c] for planar
-  timestamp?: number;                  // microseconds, from the source
-}
+### 2. Phase 1 — what one episode becomes
+
+Three passes over that mono buffer, each producing something small and
+structured-cloneable:
+
+- **Chroma** — 12 pitch classes per frame at ~15.6 fps. Each frame is *centred*
+  (the time-mean subtracted) and L2-normalised. Centring is not optional: without
+  it every frame correlates with every other at ~0.9 and the similarity measure
+  is worthless.
+- **Landmarks** — Shazam-style spectral peak pairs, hashed as
+  `(freq₁, freq₂, Δt)`. This is what finds audio that repeats.
+- **Features** — six numbers per frame: level, bass ratio, spectral flatness,
+  spectral flux, 4 Hz modulation energy, and chroma self-similarity.
+
+Together these are ~1 MB per episode. The 42 MB of PCM is released.
+
+### 3. Phase 2 — finding audio that repeats
+
+Landmarks are matched between every pair of episodes, and each match votes for a
+time offset. A real recurring asset produces a sharp spike in that offset
+histogram; coincidental matches spread out.
+
+The trap here is **dilution**. A 13-second theme inside a 22-minute episode is
+about 1% of the signal, so averaging similarity across the whole overlap buries
+it completely. Everything in this stage is built around not doing that:
+
+- Each pair contributes only its strongest few offset bins, chosen against an
+  **adaptive** threshold (mean + 5σ of its own histogram) — an absolute vote
+  count is meaningless across corpora, since with 19 episodes the noise floor
+  sits above any fixed number.
+- The extent of an occurrence is the **densest window containing 85% of its
+  votes**, not the min/max, which a couple of stray votes would stretch across
+  the whole episode.
+- Episodes whose evidence is far weaker than the median are marked **absent**
+  rather than handed a fabricated position.
+- An occurrence longer than **90 s** is marked absent outright. This catches the
+  case where a small corpus lets generic content clear the peak threshold and the
+  votes smear instead of clustering — a failure that produced a "658-second clip"
+  before it was bounded.
+
+Fingerprints locate an asset to ~1–2 s. **Refinement** then re-locks the offset
+per episode against the chroma profile and reads the extent off it, because that
+boundary is a cliff (0.99 inside, 0.07 outside) and the cut point is therefore
+well determined.
+
+### 4. Finding music inside one episode
+
+A different problem: no repetition to lean on. Instead it learns what music looks
+like *in this show*, using the detected theme as the positive example, and scores
+every frame with a linear discriminant.
+
+Measured on real episodes, `logRms` earns almost no weight — its variation
+*within* a class (silence through speech) dwarfs the difference between classes.
+So the score cannot separate a quiet passage from music, and the false positives
+were exactly that: room tone, low drones, scenes under a music bed. Music-like in
+timbre, far below it in level.
+
+Hence two guards on top of the score:
+
+- **A level gate** — a proposed cue must be within 8 dB of the level of the music
+  exemplars, measured against that episode's own mix so it survives differently
+  mastered files. This is also what the goal implies: *music under dialogue is
+  fine to keep*, and that is the quiet case.
+- **A ceiling** — one cue cannot exceed a quarter of the episode.
+
+Anything already being cut as a common clip is excluded, so the same seconds are
+never proposed twice.
+
+### 5. Cutting
+
+Music spans are removed by **dropping whole frames and re-muxing the rest** —
+AAC, FLAC and MP3 frames are independently decodable, so the surviving audio is
+bit-identical to the source rather than approximately so. That is a bonus rather
+than the point: the goal is that it works at all, and re-encoding would be
+acceptable if it bought more coverage. Where a format allows it cheaply, it is
+free.
+
+Each container needs its own handling, and each has a trap:
+
+| container | how | trap |
+|---|---|---|
+| MP4 / M4A / MOV | rebuild `moov`, copy the codec config verbatim | the `edts`/`elst` edit list must be re-emitted, or output is shifted by the AAC priming |
+| FLAC | drop frames, rewrite `STREAMINFO` | frames carry no length field — boundaries must be found by parsing headers and checking their CRC-8 |
+| MP3 | drop frames | LAME's `Xing`/`Info` header declares the *original* length, so a 60 s cut still reports 90 s until it is rewritten |
+| WAV / AIFF | copy the header, patch three length fields | none — PCM is byte-addressable, so the cut is exact arithmetic |
+
+Tags ride along: the source's `udta` box is copied **verbatim** rather than
+re-parsed, so every atom survives whether or not the code knows what it means.
+Output keeps the input's stem and takes an extension from the container, so a
+video file comes back as `.m4a`.
+
+## Supported formats
+
+| container | codec | status |
+|---|---|---|
+| MP4 · M4A · MOV | AAC | ✅ tested, including files with a video track |
+| FLAC | FLAC | ✅ tested |
+| MP3 | MP3 | ✅ tested |
+| WAV · AIFF | PCM | ✅ tested, incl. `WAVE_FORMAT_EXTENSIBLE` |
+| MKV · WebM · Ogg · WMA · AVI | anything | ❌ no demuxer |
+
+**What's missing for the unsupported formats is a demuxer, not a decoder.**
+WebCodecs decodes Opus, Vorbis and AC-3 perfectly well — it simply cannot find
+the frames. Those files report an error and are neither converted nor uploaded;
+there is no fallback decoder in the page (the ffmpeg path in `audio-decode` is
+Node-only and reachable only from tests).
+
+## Running it
+
+```bash
+python3 -m http.server 8000        # from the repo root
+open http://127.0.0.1:8000/app/
 ```
 
-`Float32Array` rather than `Int16Array` because WebCodecs, Web Audio and WASM all
-speak f32. **Chunks rather than one buffer** because a 22-minute stereo file at
-48 kHz is ~500 MB of float32, and that must never be materialised.
+No build step: the page is plain ES modules. Dropping files starts analysis
+immediately — there is no "analyze" button.
 
-`preferredInput` advertises what the analysis would like, so an optimising
-decoder can skip work — but any sample rate and channel count is accepted:
+## Verification
 
-```js
-import { preferredInput } from 'music-analysis';
-// { sampleRate: 8000, channels: 1, format: 'f32-planar' }
+Measured on a 19-episode corpus, and asserted by the test suite:
+
+| | |
+|---|---|
+| theme discovered | **18 of 19** episodes |
+| cut positions vs independent ground truth | **mean 0.81 s, max 0.83 s** |
+| general-music stage | segments in **14 of 18** episodes |
+| level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
+| time per 22-minute episode | ~3.5 s (decode 47%, features 38%, fingerprints 15%) |
+
+```bash
+npm test                      # hermetic regression + real-audio integration
+cd audio-decode && npm test   # demux / decode / cut / format coverage
 ```
 
-## Usage
+Counts, all green: regression 40, integration 12, formats 47, cut 29, demux 41,
+decode 24. The integration suite **skips cleanly** without a corpus, and asserts
+the numbers above rather than asserting "it ran".
+
+Several tests exist because a claim was wrong once. The span cap is tested by
+requiring the smear to be *reproducible with the guard off*, since a test that
+cannot fail proves nothing. The chroma handoff and the fused spectral pass are
+asserted **bit-identical** rather than close, because chroma positions every cut.
+
+## Known limitations
+
+- **Segmentation is marginal.** Calibration separation is ~1.4 pooled SD, so it
+  runs near its decision boundary and marginal episodes flip on small decode
+  differences. It is assistive, not automatic.
+- **The general-music thresholds are tuned on 11 hand-labelled segments from 2
+  episodes**, so the 8 dB level gate is provisional.
+- **Small corpora are materially weaker.** The theme stage is validated on 19
+  episodes; run over five, the adaptive peak threshold cannot reject generic
+  content and occurrences smear. Bounded now, but the list deserves a closer look
+  on a small run.
+- **Extents run slightly short** against ground truth. The start is reliable; the
+  tail is under-measured. Prefer padding the end over trusting the raw span.
+- **Music under dialogue is out of scope by design** and is left in place.
+- **Detection is tuned on one show.** A second corpus would settle how much
+  transfers.
+- **No cross-browser testing.** `showDirectoryPicker` is Chromium-only; the page
+  falls back to individual downloads elsewhere.
+
+## Repo layout
+
+```
+README.md          this file
+app/               the web page (not published) — see app/README.md
+src/               music-analysis: pure analysis, no I/O, no DOM, no Node
+audio-decode/      encoded bytes -> AudioChunk stream, and lossless cutting
+spike/             the original research code and CLIs (see spike/README.md)
+test/              regression (hermetic) and integration (real audio)
+```
+
+The project is *sleep filter*; the two packages underneath keep technical names,
+because each describes what it does rather than what it is for.
+
+`src/` has no idea what a container or a codec is. **Input is raw audio —
+`Float32Array` — never an encoded file**, which is what lets it run unchanged in
+Node, a Web Worker, or a page. `audio-decode` is the other half of that boundary.
+
+`spike/` is kept as the reference implementation — the regression suite compares
+against it — and as the source of the ground truth. It documents nine failure
+modes found while building this, with measurements.
+
+## Using the analysis directly
 
 ```js
 import { EpisodeAnalyzer, Library } from 'music-analysis';
@@ -73,126 +245,35 @@ const assets = lib.refine(candidates);        // precise per-episode cut points
 const music  = lib.segment(assets[0]);        // [{ id, segments: [{start,end,...}] }]
 ```
 
-Already-decoded data:
+The chunk contract mirrors `WebCodecs.AudioData`, so a decoder hands data over
+with almost no transformation:
 
-```js
-const a = EpisodeAnalyzer.fromSamples({ id: 'x', data: mono, sampleRate: 8000 });
-const ep = a.finish();
+```ts
+interface AudioChunk {
+  sampleRate: number;
+  numberOfFrames: number;
+  numberOfChannels: number;
+  format: 'f32-planar' | 'f32';        // planar is the fast path
+  data: Float32Array[] | Float32Array; // data[c] for planar
+  timestamp?: number;                  // microseconds, from the source
+}
 ```
 
-Single episode, no library (pass known music regions to calibrate on):
-
-```js
-import { segmentEpisode } from 'music-analysis';
-const { segments } = segmentEpisode(ep, [[150.7, 163.4]]);
-```
-
-### Why two phases
-
-Phase 1 is heavy and embarrassingly parallel — one worker per file. Phase 2 needs
-every episode's features at once and is fast (seconds for 19 episodes), so it
-runs on the main thread without blocking. That split makes the app feel instant.
-
-### Memory
-
-PCM is reduced to mono at the analysis rate as it arrives, so the 500 MB a
-22-minute stereo file would occupy at 48 kHz never materialises. The reduced
-mono (~42 MB for 22 minutes at 8 kHz) is retained for the feature pass; retained
-**features** — the thing you cache and share — are ~1 MB per episode.
-
-A fully incremental feature pass (STFT on the fly, buffering only chroma) would
-cut peak to a few MB. It is deliberately not done yet: it means rewriting three
-validated code paths, and this interface would not change if it were.
-
-### Caching
-
-Everything returned is plain data — `Float32Array`, `Map`, arrays, numbers — all
-structured-cloneable, so results go to/from a worker or straight into IndexedDB
-with no conversion step. Caching features makes re-running discovery with
-different thresholds, or re-seeding, essentially free.
-
-## Browser notes
-
-- **Pure ESM, zero dependencies, no Node built-ins, no DOM.** Runs in a page, a
-  worker, or Node identically — and has been driven end to end from a browser via
-  `app/`, including WebCodecs decode and the module worker.
-- Run phase 1 in a **Web Worker** so the UI never blocks; the API is
-  worker-agnostic.
-- **Transfer, don't copy** — `postMessage(chunk, [chunk.data.buffer])`.
-- No WASM. This is scalar float DSP over typed arrays and the JIT handles it:
-  19 × 22-minute episodes analyse in ~120 s including decode. If profiling ever
-  demands it, a WASM backend drops in behind the same pure-function interface.
-
-## API
+Chunks rather than one buffer, because a 22-minute stereo file at 48 kHz is
+~500 MB of float32 and that must never be materialised.
 
 | export | purpose |
 |---|---|
 | `EpisodeAnalyzer` | streaming chunk → features (phase 1) |
 | `Library` | discover / refine / segment across episodes (phase 2) |
 | `segmentEpisode` | per-episode segmentation without a library |
-| `MonoResampler`, `describeChunk`, `downmixInto`, `toMonoAt` | raw-audio ingestion |
 | `computeChroma`, `profile`, `smooth` | chroma features |
 | `fingerprint`, `discover` | landmark hashing and offset consensus |
 | `computeFeatures`, `calibrate`, `scoreFrames`, `segment` | music segmentation |
 | `refineAsset` | chroma refinement to precise cut points |
-| `fft` / `makeFFT` / `fftInPlace`, `dsp.*` | shared DSP primitives |
+| `MonoResampler`, `toMonoAt`, `describeChunk` | raw-audio ingestion |
+| `fft` / `makeFFT` / `realSpectrum` | shared DSP primitives |
 
-## Testing
-
-```bash
-npm test                 # unit (hermetic) + integration (real audio, skips if absent)
-npm run test:unit        # equivalence vs the reference implementation
-npm run test:integration # end-to-end on a real corpus
-```
-
-`test/regression.mjs` is hermetic and asserts the refactored modules produce the
-same output as the original spike implementation (bit-identical for chroma and
-fingerprints; within float32 epsilon for features, where the shared FFT
-precomputes twiddles the spike computed inline).
-
-`test/integration.mjs` needs a corpus of `.m4a` episodes and `ffmpeg`; it skips
-cleanly otherwise. It asserts the numbers established during development:
-theme discovered with ≥80% support, per-episode positions within 1.5 s of
-independent ground truth, and the known-atypical episode not silently placed.
-
-## Known limitations
-
-- **Segmentation is marginal.** Calibration separation is ~1.4 pooled SD, so it
-  runs near its decision boundary and marginal episodes flip between "theme
-  only" and "nothing" on small decode differences. Treat it as assistive, not
-  automatic. Detection of *music under dialogue* is out of scope by design — it
-  is left in place.
-- **Extents run ~1.4 s short** vs measured ground truth. The start is reliable;
-  the tail is under-measured. Pad the end rather than trusting the raw span.
-- **Refinement needs a full season.** The robust envelope wants ≥8 pairs (it
-  falls back automatically below that), and small or truncated subsets can
-  regress.
-- **Thresholds are tuned on one show.** A second corpus would settle how much
-  transfers.
-- **No formal abstention** at the library level yet.
-
-## Repo layout
-
-```
-music-analysis/     this package (repo root)
-audio-decode/       encoded audio -> AudioChunk stream, lossless cutting
-app/                the web page (not published)
-spike/              original research code + CLIs
-```
-
-`app/index.html` is the whole front end. See `app/README.md` for what is
-verified and what is not.
-
-`audio-decode` is a sibling package rather than a subdirectory of `src/` because
-it is independently publishable and has a different runtime profile (it uses
-Node's `child_process` for its fallback; this package uses nothing platform
-specific). If the repo grows a third package it is worth restructuring into
-`packages/*` npm workspaces — not worth the churn at two.
-
-## `spike/`
-
-The original research code and CLIs that produced the validation numbers, kept as
-the reference implementation and as the source of the ground truth used by the
-integration test. `spike/README.md` documents nine failure modes found while
-building this, with measurements — including several that were only visible
-because of a control experiment.
+Everything returned is plain data — `Float32Array`, `Map`, arrays, numbers — all
+structured-cloneable, so results go to and from a worker or straight into
+IndexedDB with no conversion step.
