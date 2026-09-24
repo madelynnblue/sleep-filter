@@ -117,7 +117,8 @@ detection threshold. That fraction was 0.35 and is now 0.10, because measurement
 said the outward reach was eating speech: across 147 segments the frames it added
 averaged `mod4` 0.175, against 0.123 in the music core and 0.215 for non-theme
 audio. Tightening it gives back 69.5 s over the corpus with no episode losing its
-segments and theme coverage unchanged at 18/18.
+segments and theme coverage unchanged at 18/18. Auditioned as clips with the cut
+boundaries marked, the tightened rule is the one that stopped taking dialogue.
 
 Anything already being cut as a common clip is excluded, so the same seconds are
 never proposed twice.
@@ -220,11 +221,13 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   differences. It is assistive, not automatic.
 - **The general-music thresholds are tuned on 11 hand-labelled segments from 2
   episodes**, so the 8 dB level gate is provisional.
-- **The peak floor's 0.7 is new and has not been checked by ear.** Making it
-  relative roughly doubles what the stage proposes — 729 s to 1487 s across the
-  18 episodes, about 83 s per episode instead of 40 s — and the segments it newly
-  admits have not been audited. If they turn out to be mostly dialogue and room
-  tone, the figure should come down; 0.9 or above loses the cue that prompted it.
+- **The peak floor's 0.7 rests on one listening pass, and the false-positive rate
+  was never counted.** Making it relative roughly doubles what the general stage
+  proposes — 729 s to 1417 s across the 18 episodes, about 79 s per episode
+  instead of 40 s — and all 146 segments were auditioned as clips. The verdict
+  was that most of them are music worth removing, so the floor stands; "most" is
+  not "all", and how many are not was not recorded. 0.9 or above loses the cue
+  that prompted the change.
 - **Small corpora are materially weaker.** The theme stage is validated on 19
   episodes; run over five, the adaptive peak threshold cannot reject generic
   content and occurrences smear. Bounded now, but the list deserves a closer look
