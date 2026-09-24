@@ -271,7 +271,7 @@ let rerun = false;
  * never interleave and corrupt `state.analyses`.
  */
 async function autoRun() {
-  if (running) { rerun = true; return; }
+  if (running) { rerun = true; poolWake?.(); return; }
   running = true;
   try {
     do {
@@ -361,16 +361,31 @@ function workerLimit(pending) {
   return Math.max(1, Math.min(cores, byMemory, WORKER_CEILING, pending));
 }
 
+/**
+ * Phase 1, over a queue that stays live for as long as it runs.
+ *
+ * It used to snapshot the pending files and size the pool from that snapshot,
+ * which meant a file added mid-run was in neither: dropping a second episode
+ * during a one-file run left the pool with a single worker and the new file
+ * untouched until the first had finished. Now a free worker takes whatever is
+ * pending at that moment, and `poolWake` lets an arrival start one immediately
+ * instead of waiting for a worker to free up.
+ *
+ * The pool size is device-bound rather than queue-bound for the same reason —
+ * what matters is how many can run at once, not how many happened to be waiting
+ * when the batch started.
+ */
+let poolWake = null;
+
 async function analyzePool() {
-  const pending = pendingFiles();
-  const limit = workerLimit(pending.length);
+  const queued = pendingFiles();
   // stale results for the same ids would corrupt discovery
-  state.analyses = state.analyses.filter((a) => !pending.some((f) => f.id === a.id));
-  let next = 0;
+  state.analyses = state.analyses.filter((a) => !queued.some((f) => f.id === a.id));
+  const limit = workerLimit(WORKER_CEILING);
+  const results = [];
+  let active = 0;
 
   function analyzeInWorker(entry) {
-    entry.status = 'running';
-    renderFiles();
     return new Promise((resolve) => {
       const worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
       const finish = (result) => { worker.terminate(); renderFiles(); resolve(result); };
@@ -393,19 +408,45 @@ async function analyzePool() {
     });
   }
 
-  const results = [];
-  await Promise.all(Array.from({ length: limit }, async () => {
-    while (next < pending.length) {
-      const p = pending[next++];
-      // removed while it sat in the queue: do not spend a decode on it
-      if (!state.files.includes(p)) continue;
-      const a = await analyzeInWorker(p);
-      if (a) results.push(a);
-    }
-  }));
+  await new Promise((resolve) => {
+    // Attempted-once guard. A failed file goes back to status 'error', which
+    // `pendingFiles()` counts as pending — so without this the pump would claim
+    // it again the moment its worker settled, and retry a file that always fails
+    // forever. Retrying is for a LATER run, which is how it worked before.
+    const attempted = new Set();
+    const pump = () => {
+      while (active < limit) {
+        // Re-read every time: this is what lets a file added mid-run join.
+        const entry = pendingFiles().find((f) => !attempted.has(f));
+        if (!entry) break;
+        attempted.add(entry);
+        entry.status = 'running';       // so it stops being pending and cannot be claimed twice
+        active++;
+        // The count can grow mid-batch, so it is re-read rather than announced
+        // once when the pool starts.
+        setStatus(`Analysing ${state.files.filter((f) => f.status === 'running' || f.status === 'queued').length} file(s)…`);
+        renderFiles();
+        analyzeInWorker(entry)
+          .then((a) => { if (a) results.push(a); })
+          .finally(() => { active--; pump(); });
+      }
+      // Nothing running and nothing waiting, so the batch is done. A file added
+      // after this resolves leaves `running` set and comes back round the
+      // do-while in autoRun().
+      if (active === 0) resolve();
+    };
+    poolWake = pump;
+    pump();
+  });
+  poolWake = null;
+
   // nor let a file removed MID-decode leave its analysis behind, where it would
   // go on contributing to discovery
-  state.analyses.push(...results.filter((a) => state.files.some((f) => f.id === a.id)));
+  for (const a of results) {
+    if (!state.files.some((f) => f.id === a.id)) continue;
+    state.analyses = state.analyses.filter((x) => x.id !== a.id);
+    state.analyses.push(a);
+  }
   return results.length;
 }
 
