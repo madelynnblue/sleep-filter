@@ -1,0 +1,56 @@
+name: Publish
+
+# Publishes the web page to GitHub Pages.
+#
+# `main` is the default branch. If this repo uses a different one, change it
+# below — and note that pressing "Run workflow" on the Actions tab works on any
+# branch without waiting for a push.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. A newer push supersedes an in-flight one rather than
+# queueing behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Don't publish broken code. The hermetic suite runs for real; the
+      # corpus-based ones (integration, and audio-decode's demux/decode/cut/
+      # formats) need a season of episodes and ffmpeg, so they skip cleanly here
+      # and are run locally instead.
+      - name: Test
+        run: node test/regression.mjs
+
+      # The page is not self-contained: app/pipeline.mjs imports ../src and
+      # ../audio-decode/src, so the published tree has to keep those at the same
+      # relative depth. scripts/build-site.mjs assembles that and refuses to
+      # include the Node-only ffmpeg fallback.
+      - name: Assemble the site
+        run: node scripts/build-site.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

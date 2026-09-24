@@ -2,3 +2,4 @@ node_modules/
 spike/segments.tsv
 *.log
 .DS_Store
+_site/
