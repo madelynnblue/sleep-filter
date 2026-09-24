@@ -19,6 +19,7 @@ import { sniffContainer } from './container.mjs';
 import { demuxMp4 } from './mp4.mjs';
 import { demuxFlac, muxFlac } from './flac.mjs';
 import { demuxMp3, muxMp3 } from './mp3.mjs';
+import { demuxWav, demuxAiff, decodePcm, selectPcmFrames, muxPcm } from './pcm.mjs';
 import { decodeWithWebCodecs } from './webcodecs.mjs';
 import { readSource, writeTempFile } from './source.mjs';
 
@@ -26,6 +27,7 @@ export { sniffContainer, MP4_EXTENSIONS } from './container.mjs';
 export { demuxMp4, parseAudioSpecificConfig, readTags, readTagsFromMoov } from './mp4.mjs';
 export { demuxFlac, muxFlac } from './flac.mjs';
 export { demuxMp3, muxMp3 } from './mp3.mjs';
+export { demuxWav, demuxAiff, decodePcm, selectPcmFrames, muxPcm } from './pcm.mjs';
 export { decodeWithWebCodecs, decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
 export { readSource } from './source.mjs';
 export { muxAudioMp4 } from './mux.mjs';
@@ -55,11 +57,14 @@ async function loadFfmpeg() {
 function builtInViable(bytes, head, opts) {
   const container = sniffContainer(head);
   if (opts.forceFfmpeg) return null;
-  if (container !== 'mp4' && container !== 'flac' && container !== 'mp3') return null;
+  const BUILT_IN = ['mp4', 'flac', 'mp3', 'wav', 'aiff'];
+  if (!BUILT_IN.includes(container)) return null;
   try {
     const demuxed = container === 'mp4' ? demuxMp4(bytes)
       : container === 'flac' ? demuxFlac(bytes)
-      : demuxMp3(bytes);
+      : container === 'mp3' ? demuxMp3(bytes)
+      : container === 'wav' ? demuxWav(bytes)
+      : demuxAiff(bytes);
     if (demuxed.fragmented || !demuxed.track.codec || !demuxed.track.sampleCount) {
       return { container, reason: demuxed.fragmented ? 'fragmented MP4' : 'no usable audio track' };
     }
@@ -90,11 +95,14 @@ export async function openAudioFile(source, opts = {}) {
     const viable = builtInViable(bytes, res.head, opts);
     if (viable?.demuxed) {
       const hasWebCodecs = typeof globalThis.AudioDecoder === 'function';
-      if (hasWebCodecs) {
+      // PCM needs no decoder at all, so unlike everything else it does not care
+      // whether WebCodecs exists — it takes the built-in path either way.
+      const isPcm = !!viable.demuxed.pcm;
+      if (hasWebCodecs || isPcm) {
         const t = viable.demuxed.track;
         return {
           container: viable.container,
-          backend: 'webcodecs',
+          backend: isPcm ? 'pcm' : 'webcodecs',
           info: {
             name: res.name,
             container: viable.container,
@@ -104,7 +112,11 @@ export async function openAudioFile(source, opts = {}) {
             duration: viable.demuxed.durationUs / 1e6,
             sampleCount: t.sampleCount,
           },
-          chunks: () => decodeWithWebCodecs(bytes, viable.demuxed, opts),
+          // PCM has nothing to decode: the bytes are the samples, so it skips
+          // WebCodecs entirely rather than inventing a codec string for it.
+          chunks: () => (viable.demuxed.pcm
+            ? decodePcm(bytes, viable.demuxed, opts)
+            : decodeWithWebCodecs(bytes, viable.demuxed, opts)),
         };
       }
       if (wanted === 'webcodecs') {

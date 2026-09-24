@@ -24,6 +24,7 @@ import { demuxMp3, muxMp3 } from '../src/mp3.mjs';
 import { sniffContainer } from '../src/container.mjs';
 import { demuxMp4 } from '../src/mp4.mjs';
 import { cutAudio, outputExtensionFor } from '../src/cut.mjs';
+import { demuxWav, demuxAiff, decodePcm, selectPcmFrames, muxPcm } from '../src/pcm.mjs';
 
 const DIR = (process.argv[2] && !process.argv[2].startsWith('--')) ? process.argv[2]
   : join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -44,7 +45,7 @@ if (!source) { console.log(`SKIP: no .m4a files in ${DIR}`); process.exit(0); }
 
 const work = mkdtempSync(join(tmpdir(), 'audio-decode-fmt-'));
 const fixtures = {};
-for (const [fmt, codec] of [['flac', 'flac'], ['mp3', 'libmp3lame']]) {
+for (const [fmt, codec] of [['flac', 'flac'], ['mp3', 'libmp3lame'], ['wav', 'pcm_s16le'], ['aiff', 'pcm_s16be']]) {
   const out = join(work, `sample.${fmt}`);
   const r = spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', join(DIR, source),
     '-t', '60', '-c:a', codec, out], { encoding: 'utf8' });
@@ -142,6 +143,45 @@ for (const [label, ext, args] of [
   const dur = probeDuration(cutPath);
   ok(`  cutting the audio out yields valid audio (${dur}s)`,
      Number.isFinite(dur) && Math.abs(dur - 20) < 0.4);
+  console.log('');
+}
+
+/* ----------------------------------------------------------------- PCM -- */
+//
+// PCM is the one case with no decoder in it. The bytes are the samples, so
+// "decode" is integer-to-float arithmetic and the cut is byte arithmetic at
+// frame granularity — meaning the cut must be bit-identical, not merely close.
+{
+  console.log('PCM (WAV/AIFF):');
+  for (const [name, demux] of [['wav', demuxWav], ['aiff', demuxAiff]]) {
+    const bytes = new Uint8Array(readFileSync(join(work, `sample.${name}`)));
+    const d = demux(bytes);
+    ok(`  ${name}: sniffed as ${name}`, sniffContainer(bytes.subarray(0, 16)) === name);
+    ok(`  ${name}: codec names the sample format (${d.track.codec})`, /^pcm-/.test(d.track.codec));
+    ok(`  ${name}: duration matches ffprobe (${(d.durationUs / 1e6).toFixed(2)}s)`,
+       Math.abs(d.durationUs / 1e6 - 60) < 0.1);
+    ok(`  ${name}: no per-frame sample list to build`, d.samples === undefined);
+
+    let frames = 0;
+    for await (const c of decodePcm(bytes, d, { fromSeconds: 1, toSeconds: 2 })) frames += c.numberOfFrames;
+    ok(`  ${name}: streams 1s as ${frames} frames`, frames === d.track.sampleRate);
+
+    const kept = selectPcmFrames(d.pcm, [[20, 40]], { mode: 'remove' });
+    const out = muxPcm(bytes, d, kept);
+    const cutPath = join(work, `pcm-cut.${name}`);
+    writeFileSync(cutPath, out);
+    const dur = probeDuration(cutPath);
+    ok(`  ${name}: ffprobe accepts the cut (${dur}s, want 40)`,
+       Number.isFinite(dur) && Math.abs(dur - 40) < 0.1);
+    ok(`  ${name}: decodes cleanly`, decodesCleanly(cutPath).ok);
+
+    // the surviving audio must be the source's bytes, unchanged
+    const buf = (f) => spawnSync('ffmpeg', ['-v', 'error', '-i', f, '-t', '10', '-f', 's16le', '-'],
+      { encoding: 'buffer', maxBuffer: 1 << 28 }).stdout;
+    const a = buf(join(work, `sample.${name}`)), b = buf(cutPath);
+    ok(`  ${name}: audio before the cut is bit-identical (${a.length} bytes)`,
+       a.length === b.length && a.equals(b));
+  }
   console.log('');
 }
 

@@ -16,6 +16,7 @@
 import { demuxMp4 } from './mp4.mjs';
 import { demuxFlac, muxFlac } from './flac.mjs';
 import { demuxMp3, muxMp3 } from './mp3.mjs';
+import { demuxWav, demuxAiff, selectPcmFrames, muxPcm } from './pcm.mjs';
 import { muxAudioMp4 } from './mux.mjs';
 import { sniffContainer } from './container.mjs';
 
@@ -85,6 +86,9 @@ export function selectSamples(demuxed, ranges, opts = {}) {
  */
 export function cutAudio(source, ranges, opts = {}) {
   const container = opts.container ?? sniffContainer(source.subarray(0, 16));
+  // PCM needs no frames list and no muxer: it is byte-addressable, so the cut is
+  // arithmetic on the header and a concatenation of the kept bytes.
+  if (container === 'wav' || container === 'aiff') return cutPcm(source, ranges, opts, container);
   const demuxed = container === 'flac' ? demuxFlac(source)
     : container === 'mp3' ? demuxMp3(source)
     : demuxMp4(source);
@@ -145,6 +149,35 @@ export function cutAudio(source, ranges, opts = {}) {
   };
 }
 
+/** Cut uncompressed PCM. Exact, codec-free, and needs no muxer. */
+function cutPcm(source, ranges, opts, container) {
+  const demuxed = container === 'wav' ? demuxWav(source) : demuxAiff(source);
+  const kept = selectPcmFrames(demuxed.pcm, ranges, opts);
+  if (!kept.length) throw new Error('cutAudio: every sample would be removed — refusing to write an empty file');
+
+  const keptFrames = kept.reduce((n, [a, b]) => n + (b - a), 0);
+  const total = demuxed.pcm.frameCount;
+  return {
+    bytes: muxPcm(source, demuxed, kept),
+    info: {
+      mode: opts.mode ?? 'remove',
+      sourceSeconds: total / demuxed.track.sampleRate,
+      outputSeconds: keptFrames / demuxed.track.sampleRate,
+      removedSeconds: (total - keptFrames) / demuxed.track.sampleRate,
+      requestedSeconds: (opts.requestedSeconds ?? 0),
+      snapSeconds: 0,                       // PCM snaps to the sample, not to a frame
+      frameSeconds: 1 / demuxed.track.sampleRate,
+      keptSamples: keptFrames,
+      removedSamples: total - keptFrames,
+      sampleRate: demuxed.track.sampleRate,
+      channels: demuxed.track.channels,
+      codec: demuxed.track.codec,
+      container,
+      outputExtension: outputExtensionFor(source),
+    },
+  };
+}
+
 /**
  * The extension an output will carry, decided by the container that came in.
  *
@@ -154,5 +187,9 @@ export function cutAudio(source, ranges, opts = {}) {
  */
 export function outputExtensionFor(source) {
   const container = sniffContainer(source.subarray(0, 16));
-  return container === 'flac' ? 'flac' : container === 'mp3' ? 'mp3' : 'm4a';
+  if (container === 'flac') return 'flac';
+  if (container === 'mp3') return 'mp3';
+  if (container === 'wav') return 'wav';
+  if (container === 'aiff') return 'aiff';
+  return 'm4a';                    // MP4 output is always audio-only
 }

@@ -38,6 +38,7 @@ const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, 
 // The container is whatever came in, so the download needs the matching type.
 const AUDIO_MIME = {
   m4a: 'audio/mp4', mp4: 'audio/mp4', flac: 'audio/flac', mp3: 'audio/mpeg',
+  wav: 'audio/wav', aiff: 'audio/aiff', aif: 'audio/aiff',
 };
 const audioMime = (name) =>
   AUDIO_MIME[String(name).split('.').pop().toLowerCase()] ?? 'application/octet-stream';
