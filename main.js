@@ -104,8 +104,7 @@ const hasFS = typeof window.showDirectoryPicker === 'function';
 // decoding cannot work at all and the user needs to know why.
 if (!hasWebCodecs) {
   $('capability').hidden = false;
-  $('capability').textContent =
-    'WebCodecs is not available here, so decoding will fail. Try Chrome, Edge or Safari 16.4+.';
+  $('capability').textContent = 'Decoding needs WebCodecs. Use Chrome, Edge or Safari 16.4+.';
 }
 
 /* --------------------------------------------------------- file input -- */
@@ -458,7 +457,7 @@ async function runDetection() {
 
   if (!wantThemes && !$('featMusic').checked) {
     $('verify').hidden = true;
-    setStatus('Nothing selected — enable a feature to find music.');
+    setStatus('Nothing selected.');
     return;
   }
   setStatus('Finding music…');
@@ -508,9 +507,8 @@ function renderClips() {
   if (!state.shown.length) {
     stopPlayersIn($('clips'));
     $('clips').innerHTML = state.analyses.length < 2
-      ? '<li class="empty">Common clips are audio that repeats across episodes, so this needs at ' +
-        'least two files. General music still runs, below.</li>'
-      : '<li class="empty">No recurring audio found across these files.</li>';
+      ? '<li class="empty">Common clips need at least two files.</li>'
+      : '<li class="empty">No recurring audio found.</li>';
     return;
   }
 
@@ -906,16 +904,12 @@ function renderMusic() {
   const ex = calibrationExemplars();
   const picked = [...state.selected].length > 0;
   if (state.musicSeed === 'foreground') {
-    note.textContent =
-      'No common clip to calibrate on, so this is calibrated on the most music-like passage in each ' +
-      'episode — the loudest stretch that is not speech-modulated. That is a weaker example than a ' +
-      'detected theme, so expect to untick some.';
+    note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.';
   } else {
     note.textContent = ex.length
       ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
-        'Untick anything you want to keep. This stage is assistive — it runs close to its decision ' +
-        'boundary, so some segments may be wrong.'
-      : 'General music needs at least one music example to calibrate on, and none was found.';
+        'Untick what should stay.'
+      : 'No music example to calibrate on.';
   }
 
   if (!state.music.length) { stopPlayersIn(el); el.innerHTML = ''; return; }
@@ -1050,7 +1044,7 @@ $('export').onclick = async () => {
     }
 
     if (!perFile.size) {
-      $('summary').textContent = 'Nothing to remove — no clips selected and no general music to cut.';
+      $('summary').textContent = 'Nothing to remove.';
       $('done').hidden = false;
       return;
     }
