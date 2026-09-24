@@ -110,6 +110,15 @@ Hence three guards on top of the score:
   fine to keep*, and that is the quiet case.
 - **A ceiling** — one cue cannot exceed a quarter of the episode.
 
+Where a segment *ends* is a separate tuned decision from whether it is music. A
+run is detected on a median-filtered score, which is robust but smears the
+boundary; each edge may then reach a fraction of the run's prominence below the
+detection threshold. That fraction was 0.35 and is now 0.10, because measurement
+said the outward reach was eating speech: across 147 segments the frames it added
+averaged `mod4` 0.175, against 0.123 in the music core and 0.215 for non-theme
+audio. Tightening it gives back 69.5 s over the corpus with no episode losing its
+segments and theme coverage unchanged at 18/18.
+
 Anything already being cut as a common clip is excluded, so the same seconds are
 never proposed twice.
 

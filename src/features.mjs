@@ -338,7 +338,20 @@ export function segment(scores, fps, opts = {}) {
     // to stop a misfire becoming a ten-minute cut.
     maxFractionOfEpisode = 0.25,
     maxGap = 0.8,      // seconds; bridge gaps up to this
-    edgeFrac = 0.35,   // segment edges where the smoothed score crosses this fraction
+    // How far below the detection threshold a segment edge may reach, as a
+    // fraction of the run's prominence (peak - threshold).
+    //
+    // This decides how much audio beyond the confident core gets cut, and it was
+    // set far too generously at 0.35. Measured over the 147 segments the general
+    // stage produces, the frames the outward walk added average mod4 0.175 —
+    // against 0.123 for the music core and 0.215 for non-theme audio. They are
+    // speech-leaning, not music tail: 90.7s of it, and it is why segments were
+    // ending with a few words of dialogue attached.
+    //
+    // At 0.10 the walk gives back 69.5s of that while every episode still gets
+    // segments and theme coverage stays at 18/18, so nothing is lost by it. A
+    // fade-out that dips just under the threshold is still caught.
+    edgeFrac = 0.10,
     // Floor on a run's peak score, as a fraction of the way from the decision
     // threshold (`mid`) to the mean score of the positive exemplars (`posMean`).
     //
