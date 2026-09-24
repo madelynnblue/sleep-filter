@@ -263,10 +263,12 @@ asserted **bit-identical** rather than close, because chroma positions every cut
 - **The single-file exemplar is a heuristic, not a detector.** With no common
   clip it calibrates on the loudest, least speech-like 10 s it can find. That
   recovers the theme's class separation on this corpus (1.81 against 1.63) and
-  keeps the known false positive out, but it has only been judged against what
-  the theme calibration says — never by ear, and never on material that is not
-  a TV episode. On a podcast or a music track it will select something and
-  calibrate on it without any way to know it chose well.
+  keeps the known false positive out. It has been heard once: S01E06 on its own
+  proposes 7 segments, and all 7 were music worth removing. That is precision on
+  **one episode**, not recall — nothing has checked what it *missed* — and it is
+  one listener, so treat it as a spot check rather than a validation. It has also
+  never run on material that is not a TV episode: on a podcast or a music track
+  it will select something and calibrate on it with no way to know it chose well.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
 - **Music under dialogue is out of scope by design** and is left in place.
