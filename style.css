@@ -101,3 +101,8 @@ th { color:var(--dim); font-weight:600; }
 #matrix td.no { color:#3d434c; }
 #matrix .off { opacity:.3; }
 small { color:var(--dim); font-weight:400; }
+
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+footer { margin-top:2.5rem; padding-top:1rem; border-top:1px solid var(--line);
+  font-size:.85rem; color:var(--dim); }
