@@ -34,10 +34,10 @@ jobs:
       - name: Test
         run: node test/regression.mjs
 
-      # The page is not self-contained: app/pipeline.mjs imports ../src and
-      # ../audio-decode/src, so the published tree has to keep those at the same
-      # relative depth. scripts/build-site.mjs assembles that and refuses to
-      # include the Node-only ffmpeg fallback.
+      # The page lives at the repo root, so its imports of ./src and
+      # ./audio-decode/src resolve the same way here as they do locally. The
+      # script copies it into _site/ and refuses to publish either the Node-only
+      # ffmpeg fallback or a module graph that would 404.
       - name: Assemble the site
         run: node scripts/build-site.mjs
 

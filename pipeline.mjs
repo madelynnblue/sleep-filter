@@ -10,10 +10,10 @@
  *   general music   music within a single episode (interludes, songs, credits)
  */
 
-import { EpisodeAnalyzer, Library, segmentEpisode } from '../src/index.mjs';
+import { EpisodeAnalyzer, Library, segmentEpisode } from './src/index.mjs';
 import {
   openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
-} from '../audio-decode/src/index.mjs';
+} from './audio-decode/src/index.mjs';
 
 export { outputExtensionFor };
 
@@ -116,7 +116,7 @@ const overlapsAny = (seg, ranges) => ranges.some(([a, b]) => seg.start < b && a 
  * assets. Using several as positives gives the discriminant more to learn from
  * than a single exemplar.
  *
- * @param {import('../src/library.mjs').Library} library
+ * @param {import('./src/library.mjs').Library} library
  * @param {object[]} assets
  * @param {Map<string, Array<[number, number]>>} [opts.exclude]
  *        per episode, audio already being cut for another reason. Segments

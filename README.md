@@ -1,5 +1,15 @@
 # sleep filter
 
+Do you fall asleep to old TV shows?
+Do their theme music and end credits wake you up?
+Do you have to skip the musical episodes because they're distracting?
+
+Sleep filter is a website that:
+
+- identifies common audio elements among a group of files
+- identifies music in files
+- cuts 
+
 Finds the music in TV episodes and cuts it out, so what's left is easier to fall
 asleep to. Runs entirely in the browser — no server, no upload, no dependencies.
 
@@ -155,11 +165,23 @@ Node-only and reachable only from tests).
 
 ```bash
 python3 -m http.server 8000        # from the repo root
-open http://127.0.0.1:8000/app/
+open http://127.0.0.1:8000/
 ```
 
-No build step: the page is plain ES modules. Dropping files starts analysis
-immediately — there is no "analyze" button.
+No build step: the page is plain ES modules, and it sits at the repo root so its
+imports of `./src` and `./audio-decode/src` resolve as they are. Dropping files
+starts analysis immediately — there is no "analyze" button.
+
+GitHub Pages has no way to publish a subdirectory at `/` — `deploy-pages` serves
+the artifact it is handed at the site root, verbatim, and the only folder names a
+branch deploy accepts are `/` and `/docs`. So `scripts/build-site.mjs` copies the
+page and both library trees into `_site/`, which is exactly what the
+[Pages workflow](.github/workflows/pages.yml) uploads:
+
+```bash
+node scripts/build-site.mjs
+python3 -m http.server 8000 --directory _site    # the published build, byte for byte
+```
 
 ## Verification
 
@@ -172,6 +194,10 @@ Measured on a 19-episode corpus, and asserted by the test suite:
 | general-music stage | segments in **14 of 18** episodes |
 | level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
 | time per 22-minute episode | ~3.5 s (decode 47%, features 38%, fingerprints 15%) |
+
+The page is verified end to end in a real browser: the module graph loads,
+WebCodecs decodes MP4/AAC, the phase-1 worker pool runs and transfers its buffers
+back, phase 2 discovers and refines, and the cut writes output files.
 
 ```bash
 npm test                      # hermetic regression + real-audio integration
@@ -205,16 +231,27 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   transfers.
 - **No cross-browser testing.** `showDirectoryPicker` is Chromium-only; the page
   falls back to individual downloads elsewhere.
+- **Nothing is cached.** Every run re-decodes every file from scratch, so
+  re-running a season re-decodes all 19 episodes. The phase-1 results are already
+  structured-cloneable, so IndexedDB is the obvious fix.
+- **The page and the CLI have not been compared sample for sample.** Both go
+  through the same orchestration and the same cutter, so they should agree
+  exactly — but that is an argument, not a measurement.
 
 ## Repo layout
 
 ```
 README.md          this file
-app/               the web page (not published) — see app/README.md
+index.html         the page — at the repo root so that it publishes at /
+main.js            page UI: file intake, results, auditions, export
+pipeline.mjs       orchestration shared by the worker pool and the tests
+worker.mjs         phase-1 worker: decode -> chroma / landmarks / features
+style.css          page styles
 src/               music-analysis: pure analysis, no I/O, no DOM, no Node
 audio-decode/      encoded bytes -> AudioChunk stream, and lossless cutting
 spike/             the original research code and CLIs (see spike/README.md)
 test/              regression (hermetic) and integration (real audio)
+scripts/           build-site.mjs — assembles _site/ for GitHub Pages
 ```
 
 The project is *sleep filter*; the two packages underneath keep technical names,

@@ -27,7 +27,7 @@ import { EpisodeAnalyzer, Library, discover } from '../src/index.mjs';
 // audio-decode produces the chunks a browser's WebCodecs path would produce.
 import { openAudioFile } from '../audio-decode/src/index.mjs';
 // the path the worker actually calls, for the progress check at the end
-import { analyzeOne } from '../app/pipeline.mjs';
+import { analyzeOne } from '../pipeline.mjs';
 
 const SR = 8000;
 const DIR = process.argv[2] || join(homedir(), 'Downloads', 'andy-richter-audio');
