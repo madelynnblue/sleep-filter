@@ -19,7 +19,7 @@ import {
   EpisodeAnalyzer, Library, computeChroma, computeFeatures, fingerprint,
   MonoResampler, segmentEpisode, segment, preferredInput,
 } from '../src/index.mjs';
-import { NFEAT, FEATURE_NAMES } from '../src/features.mjs';
+import { NFEAT } from '../src/features.mjs';
 
 // reference implementation (the original spike, unchanged)
 import { computeChroma as refChroma } from '../spike/chroma.mjs';
@@ -40,20 +40,6 @@ const close = (a, b, tol = 0) => {
     if (!Number.isFinite(a[i]) || !Number.isFinite(b[i])) return { ok: false, detail: `non-finite at ${i}` };
   }
   return { ok: max <= tol, detail: `max abs diff ${max}` };
-};
-
-/**
- * The first `keep` features of each frame, laid out back-to-back.
- *
- * Lets a wider feature vector be compared against a narrower reference — the
- * spike computes six features and predates the seventh, and this is how the six
- * it does compute stay checked frame by frame rather than by stride arithmetic.
- */
-const deinterleave = (feats, stride, keep) => {
-  const n = Math.floor(feats.length / stride);
-  const out = new Float32Array(n * keep);
-  for (let t = 0; t < n; t++) for (let f = 0; f < keep; f++) out[t * keep + f] = feats[t * stride + f];
-  return out;
 };
 
 /* ------------------------------------------------------- generators -- */
@@ -161,15 +147,8 @@ console.log('equivalence vs reference spike implementation (same input):');
   // Not bit-identical by construction: the shared FFT precomputes twiddle
   // tables while the spike computed them inline, so results differ at float32
   // epsilon. Anything above this tolerance would be a real behavioural change.
-  //
-  // The spike predates mod4Low, so it stays the reference for the six features
-  // it does compute: they are compared de-interleaved from the wider stride,
-  // which is the check that adding a feature did not disturb any of them.
-  const cf = close(deinterleave(fa.feats, NFEAT, 6), fb.feats, 1e-6);
+  const cf = close(fa.feats, fb.feats, 1e-6);
   ok('computeFeatures equivalent (float tolerance)', cf.ok, cf.detail);
-  ok('the seventh feature only lengthens the stride',
-     fa.feats.length / NFEAT === fb.feats.length / 6,
-     `${fa.feats.length} vs ${fb.feats.length}`);
 
   const pa = fingerprint(x, { sampleRate: RATE });
   const pb = refFingerprint(x, { sampleRate: RATE });
@@ -348,18 +327,13 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   // what stops the discriminant keying on level — it is why logRms earns a tiny
   // weight on real episodes, and why a separate level gate is needed at all.
   //
-  // The last value is mod4Low, the 80-300 Hz modulation on its own: high in
-  // speech, low in music. It is what distinguishes a voice under a music bed,
-  // which the band-averaged mod4 washes out.
   const background = () => [
     -52 + 26 * rnd(), 0.14 + 0.10 * rnd(), 0.26 + 0.08 * rnd(),
     0.29 + 0.03 * rnd(), 0.14 + 0.03 * rnd(), 0.70 + 0.06 * rnd(),
-    0.18 + 0.04 * rnd(),
   ];
   const music = (level) => [
     level, 0.62 + 0.05 * rnd(), 0.075 + 0.02 * rnd(),
     0.24 + 0.01 * rnd(), 0.07 + 0.01 * rnd(), 0.85 + 0.04 * rnd(),
-    0.07 + 0.02 * rnd(),
   ];
 
   const feats = new Float32Array(nFrames * NFEAT);
@@ -385,18 +359,6 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   ok(`level gate on: the loud cue survives (${closed.length})`, covers(closed, 16));
   ok('level gate on: the 18 dB quieter cue of identical timbre is dropped', !covers(closed, 42));
 
-  // The voice cue is a policy the caller sets, so the endpoints have to be
-  // exactly what they claim: 0 removes mod4Low from the discriminant entirely
-  // (the behaviour before it existed), 1 gives it the fitted weight.
-  const off = segmentEpisode(episode, exemplar, { levelSlack: 0, speechWeight: 0 });
-  const on = segmentEpisode(episode, exemplar, { levelSlack: 0, speechWeight: 1 });
-  const voiceCol = FEATURE_NAMES.indexOf('mod4Low');
-  ok('voice weight 0 drops mod4Low from the discriminant', off.calibration.w[voiceCol] === 0);
-  ok('voice weight 1 gives it the fitted weight',
-     Math.abs(on.calibration.w[voiceCol]) > 1e-9, `w=${on.calibration.w[voiceCol]}`);
-  ok('and the two policies really do differ',
-     Math.abs(off.calibration.mid - on.calibration.mid) > 1e-9 ||
-     off.segments.length !== on.segments.length);
 }
 
 /* ------------------------------------------- music stage length cap -- */

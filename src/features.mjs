@@ -30,7 +30,7 @@ import { biquadBandpass, applyBiquad, movingAvgAbs, movAvgSq } from './dsp.mjs';
 
 import { computeChroma, pitchClassMap, finalizeChroma } from './chroma.mjs';
 
-export const FEATURE_NAMES = ['logRms', 'lowRatio', 'flatness', 'flux', 'mod4', 'chromaSelf', 'mod4Low'];
+export const FEATURE_NAMES = ['logRms', 'lowRatio', 'flatness', 'flux', 'mod4', 'chromaSelf'];
 
 const NFEAT = FEATURE_NAMES.length;
 
@@ -176,13 +176,13 @@ export function computeFeatures(samples, opts = {}) {
 
   // --- 4 Hz modulation energy ---
   //
-  // Speech has a strong syllable-rate envelope modulation that music lacks. The
-  // feature must be computed from envelopes sampled WELL above 4 Hz: deriving it
-  // from frame-rate RMS (~15.6 Hz) cannot resolve syllable rate and instead
-  // measures musical beat, which inverts the sign. So: per-band envelopes at
-  // 100 Hz via biquad bandpass + rectify + smooth, then bandpass the envelope
-  // itself in the 3-6 Hz range and compare that energy to the envelope's total
-  // AC energy.
+  // The original idea: speech has a strong syllable-rate envelope modulation
+  // that music lacks. It has to be computed from envelopes sampled WELL above
+  // 4 Hz — deriving it from frame-rate RMS (~15.6 Hz) cannot resolve syllable
+  // rate and instead measures musical beat, which inverts the sign. So: per-band
+  // envelopes at 100 Hz via biquad bandpass + rectify + smooth, then bandpass
+  // the envelope itself in the 3-6 Hz range and compare that energy to the
+  // envelope's total AC energy.
   //
   // MEASURED, AND IT DOES NOT HOLD UP. That is the design, not the behaviour:
   //
@@ -200,20 +200,13 @@ export function computeFeatures(samples, opts = {}) {
   //   0.219-0.243 for everything else. Speech and music carry syllable-rate
   //   modulation about equally on this material.
   //
-  // So this feature is, on this corpus, largely a level proxy, and `logRms`
-  // already exists. It has not been changed, because the discriminant is fitted
-  // around it and correcting it removes most of its apparent power; see the
-  // README's "the speech cue does not work" note for the attempts that followed.
+  // So this is, on this corpus, largely a level proxy, and `logRms` already
+  // exists. It is kept because the discriminant is fitted around it and removing
+  // it would change every existing result, but it is not the speech detector its
+  // name suggests. A 80-300 Hz variant of it was built, measured and removed for
+  // the same reason; see the README's "the speech cue does not work".
   const ENV_HZ = 100;
   const mod4 = new Float32Array(nFrames);
-  // The 80-300 Hz band on its own. `mod4` averages four bands, which dilutes
-  // exactly the case that matters: dialogue played UNDER music. The music's
-  // envelope dominates the wideband average, so the syllable-rate modulation of
-  // the voice is washed out — on S01E02 a 6s stretch of dialogue over a music
-  // bed measured mod4 0.134 against 0.083 for the theme, close enough to music
-  // to pass. In the vocal band alone the same stretch measures 0.173 against the
-  // theme's 0.078 and 0.177 for ordinary speech: it is plainly speech.
-  const mod4Low = new Float32Array(nFrames);
   {
     const bandDefs = [[80, 300], [300, 800], [800, 2000], [2000, 4000]];
     const envs = [];
@@ -239,8 +232,7 @@ export function computeFeatures(samples, opts = {}) {
     const bp = biquadBandpass(ENV_HZ, 4.5, 1.2);   // passband ~3-6 Hz
     const W = Math.max(4, Math.round(1.0 * ENV_HZ));
     const acc = new Float32Array(nEnv);
-    const lowAcc = new Float32Array(nEnv);
-    for (const [bi, e] of envs.entries()) {
+    for (const e of envs) {
       let mean = 0;
       for (let i = 0; i < nEnv; i++) mean += e[i];
       mean /= Math.max(nEnv, 1);
@@ -249,15 +241,12 @@ export function computeFeatures(samples, opts = {}) {
       const band = applyBiquad(dc, bp);
       const num = movAvgSq(band, W), den = movAvgSq(dc, W);
       for (let i = 0; i < nEnv; i++) {
-        const ratio = den[i] > 1e-12 ? num[i] / den[i] : 0;
-        acc[i] += ratio;
-        if (bi === 0) lowAcc[i] = ratio;      // 80-300 Hz, un-averaged
+        acc[i] += den[i] > 1e-12 ? num[i] / den[i] : 0;
       }
     }
     for (let t = 0; t < nFrames; t++) {
       const idx = Math.min(nEnv - 1, Math.round((t / fps) * ENV_HZ));
       mod4[t] = acc[idx] / envs.length;
-      mod4Low[t] = lowAcc[idx];
     }
   }
 
@@ -291,7 +280,6 @@ export function computeFeatures(samples, opts = {}) {
     feats[o + 3] = flux[t];
     feats[o + 4] = mod4[t];
     feats[o + 5] = chromaSelf[t];
-    feats[o + 6] = mod4Low[t];
   }
 
   report?.(1);
@@ -351,35 +339,6 @@ export function scoreFrames(feats, nFrames, cal) {
     out[t] = s;
   }
   return out;
-}
-
-/**
- * Shrink one feature's weight and recompute the threshold from the scaled
- * scores.
- *
- * Makes the voice cue (mod4Low) a policy the caller sets rather than a constant:
- * at 0 the feature drops out and the result is identical to before it existed,
- * at 1 it carries the weight the discriminant fitted. The threshold is
- * recomputed rather than reused, because scaling a weight moves every score —
- * keeping `mid` would change what counts as music as well as how much the
- * feature matters.
- */
-export function scaleFeatureWeight(cal, feats, nFrames, mask, feature, factor) {
-  if (!(factor >= 0) || factor === 1) return cal;
-  const col = FEATURE_NAMES.indexOf(feature);
-  if (col < 0) return cal;
-  const w = Float64Array.from(cal.w);
-  w[col] *= factor;
-
-  let sp = 0, np = 0, sn = 0, nn = 0;
-  for (let t = 0; t < nFrames; t++) {
-    let s = 0;
-    for (let f = 0; f < NFEAT; f++) s += w[f] * feats[t * NFEAT + f];
-    if (mask[t]) { sp += s; np++; }
-    else if (nn < 4000) { sn += s; nn++; }   // same negative sample as calibrate()
-  }
-  const posMean = sp / Math.max(1, np), negMean = sn / Math.max(1, nn);
-  return { ...cal, w, posMean, negMean, mid: (posMean + negMean) / 2 };
 }
 
 /** Median filter, then contiguous segments above threshold. */

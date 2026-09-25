@@ -20,7 +20,7 @@
 import { MonoResampler, DEFAULT_SAMPLE_RATE, toMonoAt } from './audio.mjs';
 import { computeChroma } from './chroma.mjs';
 import { fingerprint } from './discovery.mjs';
-import { computeFeatures, calibrate, scoreFrames, segment, scaleFeatureWeight, NFEAT } from './features.mjs';
+import { computeFeatures, calibrate, scoreFrames, segment, NFEAT } from './features.mjs';
 
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
 
@@ -296,16 +296,10 @@ export function segmentEpisode(episode, positiveRanges, opts = {}) {
     const i1 = Math.min(F.nFrames, Math.round(b * F.frameRate));
     for (let t = i0; t < i1; t++) mask[t] = 1;
   }
-  let cal = calibrate(F.feats, F.nFrames, mask, {});
+  const cal = calibrate(F.feats, F.nFrames, mask, {});
   if (!cal) {
     throw new Error('calibration failed — need at least ~10 positive frames and ~50 negatives');
   }
-  // How much the voice cue counts is a policy, not a constant: 0 drops it
-  // entirely, which is the behaviour before it existed, and 1 gives it the
-  // weight the discriminant fitted. Off by default so that adding the cue did
-  // not silently change any existing result; the page exposes it as one knob.
-  // See scaleFeatureWeight.
-  cal = scaleFeatureWeight(cal, F.feats, F.nFrames, mask, 'mod4Low', opts.speechWeight ?? 0);
   const scores = scoreFrames(F.feats, F.nFrames, cal);
   // posMean gives segment() a data-relative peak floor; see peakFrac there.
   const segments = segment(scores, F.frameRate, { mid: cal.mid, posMean: cal.posMean, ...opts });

@@ -136,32 +136,24 @@ Hence three guards on top of the score:
 
 ### The one knob
 
-There is one user-facing setting for this stage, and it runs from *cut more* to
-*cut less*. Several internal settings move together to express it, so nobody has
-to reason about a peak floor, a level gate and a voice weight separately:
+There is one user-facing setting for this stage, from *cut more* to *cut less*.
+It is the peak floor: how much of a run's own prominence above the decision
+threshold a segment must reach before it counts as music.
 
-| slider | peak floor | voice weight | corpus | theme coverage |
-|---|---|---|---|---|
-| cut more (0, the default) | 0.70 | 0 | 146 segments / 1417 s | 18/18 |
-| middle | 0.85 | 0.5 | 123 / 1264 s | 17/18 |
-| cut less (100) | 1.00 | 1 | 114 / 1202 s | 17/18 |
+| slider | peak floor | corpus | theme coverage |
+|---|---|---|---|
+| cut more (0, the default) | 0.70 | 146 segments / 1417 s | 18/18 |
+| 50 | 0.85 | 144 / 1408 s | 18/18 |
+| cut less (100) | 1.00 | 114 / 1233 s | 18/18 |
 
 At 0 the configuration is exactly what it was before the knob existed, which is
-why that is the default: adding the control changed no existing result. The
-setting is remembered between visits.
+why that is the default: adding the control changed no existing result. Raising
+it gives up short and marginal runs, and costs no theme coverage at any setting.
+The value is remembered between visits.
 
-What it trades is the case that prompted it. A passage of dialogue mixed with
-music, and a passage of loud music with people talking over it, are not
-separable by anything measured here — in both, the low band is mostly the music
-bed, and the one cue that sees a voice at all (`mod4Low`, the 80–300 Hz
-syllable-rate modulation) ranks the loud-music case as *more* voice-like than the
-dialogue. So the knob picks a side rather than reconciling them, and it moves
-both together: raising it protects dialogue and leaves loud music under talking.
-
-The voice weight is a scale on that cue's discriminant weight, 0 to 1, with the
-decision threshold recomputed at each setting — scaling a weight moves every
-score, so reusing the old threshold would change what counts as music as well as
-how much the cue matters.
+There was a second setting here until it was measured and removed — a weight on
+an 80–300 Hz "voice" cue meant to keep dialogue out of the cuts. It did not do
+that, and the measurement is worth keeping even though the code is gone.
 
 Where a segment *ends* is a separate tuned decision from whether it is music. A
 run is detected on a median-filtered score, which is robust but smears the
@@ -306,34 +298,35 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   it will select something and calibrate on it with no way to know it chose well.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
-- **The speech cue does not work, and this is the largest known weakness.** Every
-  "is this speech?" decision rests on `mod4` and `mod4Low`, and measurement says
-  `mod4` is largely a **level proxy** rather than a speech cue: it removes the
-  envelope's DC against the whole episode's mean, so a loud passage carries a
-  constant into the denominator and its ratio is crushed. On S02E05 a man talking
-  at 8:42 measures 0.294 when the band is analysed directly and 0.066 through the
-  feature. The title theme is crushed the same way — it is loud too — which is
-  what makes the feature *look* discriminative: theme 0.072–0.090 against
-  0.177–0.203 for the rest of the episode. Computed level-invariantly (subtract a
-  local mean, or divide by one; both tried) the gap closes entirely: 0.240–0.248
-  against 0.219–0.243.
-  
-  Two replacements were then tried and also failed. **Low-band flux** (80–300 Hz)
-  is dominated by the music bed in both dialogue-under-music and music-with-
-  talking, so it separates nothing — the dialogue scored 0.253 against 0.250 and
-  0.252 for the two passages it was meant to distinguish. **Pitch tracking**
-  (autocorrelation over 80–300 Hz) came out inverted: periodicity is identical
-  for speech and music (0.389 vs 0.388–0.406) and pitch jitter is 2–5× *higher*
-  for music (0.41–0.48 vs 0.09–0.18), because a steady speaker barely moves while
-  music tracks melody. The one gap that appears — voiced fraction, speech
-  0.51–0.55 against music 0.58–0.67 — is a margin of 0.03, and club music with
-  people shouting over it sits below both at 0.31–0.39, so thresholding it would
-  fix one case by breaking another.
-  
-  Consequence: loud dialogue with no music at all can be proposed for removal,
-  because the only evidence against it is `logRms`, `flatness` and `chromaSelf`.
-  No slider position fixes that; the knob adjusts weights around a feature that
-  is not measuring what its name says.
+- **There is no working speech detector, and loud dialogue is the price.** Three
+  attempts, all measured:
+
+  `mod4`, the cue the stage still uses, is largely a **level proxy** rather than a
+  speech cue: it removes the envelope's DC against the whole episode's mean, so a
+  loud passage carries a constant into the denominator and its ratio is crushed.
+  On S02E05 a man talking at 8:42 measures 0.294 when the band is analysed
+  directly and 0.066 through the feature. The title theme is crushed the same way
+  — it is loud too — which is what makes the feature *look* discriminative:
+  theme 0.072–0.090 against 0.177–0.203 for the rest of the episode. Computed
+  level-invariantly, by subtracting a local mean and by dividing by one, the gap
+  closes entirely: 0.240–0.248 against 0.219–0.243. It is kept only because the
+  discriminant is fitted around it.
+
+  **Low-band flux** (80–300 Hz) was tried as a replacement and separates nothing:
+  the music bed dominates that band in both dialogue-under-music and
+  music-with-talking, so the dialogue scored 0.253 against 0.250 and 0.252 for
+  the two passages it had to tell apart.
+
+  **Pitch tracking** (autocorrelation over 80–300 Hz) came out inverted:
+  periodicity is identical for speech and music (0.389 against 0.388–0.406) and
+  pitch jitter is 2–5× *higher* for music (0.41–0.48 against 0.09–0.18), because
+  a steady speaker barely moves while music tracks melody. The one gap that
+  appears — voiced fraction, speech 0.51–0.55 against music 0.58–0.67 — is a
+  margin of 0.03, and club music with shouting over it sits below both at
+  0.31–0.39, so thresholding it would fix one case by breaking another.
+
+  So loud dialogue with no music at all can be proposed, and no slider position
+  fixes it. Untick it. This is a missing capability, not a mis-tuned number.
 - **Music under dialogue is out of scope by design** and is left in place.
 - **Detection is tuned on one show.** A second corpus would settle how much
   transfers.

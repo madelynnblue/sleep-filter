@@ -864,51 +864,19 @@ function strictness() {
 }
 
 /**
- * How the single knob maps onto the settings that actually exist.
+ * What the one knob does.
  *
- * Raising the voice weight alone would be a narrow control — it moves the
- * corpus from 146 segments/1417s to 139/1342s, because only voice-heavy
- * segments are affected. The peak floor gives it range without the cost that
- * tightening the level gate carries: measured, coupling the gate as well drops
- * theme coverage from 18/18 episodes to 14, where this keeps 17.
+ * It is the peak floor: how much of a run's own prominence above the decision
+ * threshold a segment must reach before it counts as music. Raising it makes the
+ * stage harder to convince, so it proposes less; that is the whole of it. There
+ * was a second setting here — a weight on an 80-300 Hz "voice" cue — which was
+ * removed after measurement showed the modulation cue it scaled is largely a
+ * level proxy rather than a speech detector, so the control was not doing what
+ * its label said.
  */
 function stageOptions() {
-  const t = strictness();
-  return {
-    speechWeight: t,            // how much voice-likeness counts against music
-    peakFrac: 0.7 + 0.3 * t,    // how prominent a run must be to count
-  };
+  return { peakFrac: 0.7 + 0.3 * strictness() };
 }
-
-function renderStrictnessHint() {
-  const t = strictness();
-  $('strictnessHint').textContent = t === 0
-    ? 'Anything music-like is cut, including dialogue mixed with music.'
-    : t >= 1
-      ? 'Only clear music is cut, so loud music with talking over it is left in.'
-      : 'Dialogue mixed with music is left in; some loud music under talking is too.';
-}
-
-function applyStrictness() {
-  try { localStorage.setItem(STRICTNESS_KEY, $('strictness').value); } catch { /* no storage */ }
-  renderStrictnessHint();
-  // Only the music stage depends on this, so there is no need to re-discover
-  // anything or re-decode a frame — recomputing phase 2 is enough.
-  if (state.library) { computeMusic(); renderMusic(); }
-}
-
-{
-  // Guarded: reading localStorage can throw outright when storage is disabled,
-  // and this runs at module scope, where an exception would kill the page.
-  let saved = NaN;
-  try { saved = Number(localStorage.getItem(STRICTNESS_KEY)); } catch { /* no storage */ }
-  if (Number.isFinite(saved) && saved >= 0 && saved <= 100) $('strictness').value = String(saved);
-  renderStrictnessHint();
-  // `change` rather than `input`: dragging fires continuously, and each one
-  // would re-segment every episode.
-  $('strictness').onchange = () => applyStrictness();
-}
-
 /**
  * Propose per-episode music segments. Everything is enabled by default — the
  * user unticks what they want to keep, rather than hunting for what to remove.
