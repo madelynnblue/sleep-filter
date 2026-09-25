@@ -174,7 +174,7 @@ export function computeFeatures(samples, opts = {}) {
 
   report?.(LOOP_SHARE);
 
-  // --- 4 Hz modulation energy: the speech cue (Scheirer & Slaney) ---
+  // --- 4 Hz modulation energy ---
   //
   // Speech has a strong syllable-rate envelope modulation that music lacks. The
   // feature must be computed from envelopes sampled WELL above 4 Hz: deriving it
@@ -183,6 +183,27 @@ export function computeFeatures(samples, opts = {}) {
   // 100 Hz via biquad bandpass + rectify + smooth, then bandpass the envelope
   // itself in the 3-6 Hz range and compare that energy to the envelope's total
   // AC energy.
+  //
+  // MEASURED, AND IT DOES NOT HOLD UP. That is the design, not the behaviour:
+  //
+  //   The DC that gets removed below is the WHOLE EPISODE's mean, so a passage
+  //   loud relative to the episode carries a constant into `dc`, which lands in
+  //   the denominator and crushes the ratio. On S02E05 a man talking plainly at
+  //   8:42 measures 0.294 when the band is analysed directly and 0.066 through
+  //   this feature — the arithmetic discards the evidence. The title theme is
+  //   crushed the same way, for the same reason: it is loud. Over three episodes
+  //   the theme reads 0.072-0.090 against 0.177-0.203 for the rest of the
+  //   episode, and that gap is very nearly just level.
+  //
+  //   Remove the DC level-invariantly — subtract a local mean, or divide by one,
+  //   both tried — and the gap closes completely: theme 0.240-0.248 against
+  //   0.219-0.243 for everything else. Speech and music carry syllable-rate
+  //   modulation about equally on this material.
+  //
+  // So this feature is, on this corpus, largely a level proxy, and `logRms`
+  // already exists. It has not been changed, because the discriminant is fitted
+  // around it and correcting it removes most of its apparent power; see the
+  // README's "the speech cue does not work" note for the attempts that followed.
   const ENV_HZ = 100;
   const mod4 = new Float32Array(nFrames);
   // The 80-300 Hz band on its own. `mod4` averages four bands, which dilutes

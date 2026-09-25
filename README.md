@@ -306,6 +306,34 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   it will select something and calibrate on it with no way to know it chose well.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
+- **The speech cue does not work, and this is the largest known weakness.** Every
+  "is this speech?" decision rests on `mod4` and `mod4Low`, and measurement says
+  `mod4` is largely a **level proxy** rather than a speech cue: it removes the
+  envelope's DC against the whole episode's mean, so a loud passage carries a
+  constant into the denominator and its ratio is crushed. On S02E05 a man talking
+  at 8:42 measures 0.294 when the band is analysed directly and 0.066 through the
+  feature. The title theme is crushed the same way — it is loud too — which is
+  what makes the feature *look* discriminative: theme 0.072–0.090 against
+  0.177–0.203 for the rest of the episode. Computed level-invariantly (subtract a
+  local mean, or divide by one; both tried) the gap closes entirely: 0.240–0.248
+  against 0.219–0.243.
+  
+  Two replacements were then tried and also failed. **Low-band flux** (80–300 Hz)
+  is dominated by the music bed in both dialogue-under-music and music-with-
+  talking, so it separates nothing — the dialogue scored 0.253 against 0.250 and
+  0.252 for the two passages it was meant to distinguish. **Pitch tracking**
+  (autocorrelation over 80–300 Hz) came out inverted: periodicity is identical
+  for speech and music (0.389 vs 0.388–0.406) and pitch jitter is 2–5× *higher*
+  for music (0.41–0.48 vs 0.09–0.18), because a steady speaker barely moves while
+  music tracks melody. The one gap that appears — voiced fraction, speech
+  0.51–0.55 against music 0.58–0.67 — is a margin of 0.03, and club music with
+  people shouting over it sits below both at 0.31–0.39, so thresholding it would
+  fix one case by breaking another.
+  
+  Consequence: loud dialogue with no music at all can be proposed for removal,
+  because the only evidence against it is `logRms`, `flatness` and `chromaSelf`.
+  No slider position fixes that; the knob adjusts weights around a feature that
+  is not measuring what its name says.
 - **Music under dialogue is out of scope by design** and is left in place.
 - **Detection is tuned on one show.** A second corpus would settle how much
   transfers.
