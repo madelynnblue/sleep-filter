@@ -71,6 +71,19 @@
             <em>Music inside each episode — interludes, songs, credits.</em>
           </span>
         </label>
+        <p class="opt">
+          <label for="strictness">Cut more</label>
+          <input
+            type="range"
+            id="strictness"
+            value="0"
+            min="0"
+            max="100"
+            step="10"
+          />
+          <label for="strictness">Cut less</label>
+        </p>
+        <p class="hint" id="strictnessHint"></p>
       </fieldset>
 
       <p id="status" class="status" hidden></p>

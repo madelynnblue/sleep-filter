@@ -843,6 +843,73 @@ $('featMusic').onchange = () => autoRun();
 $('topN').onchange = () => autoRun();
 
 /**
+ * The one knob: how much to remove.
+ *
+ * A user has one opinion about this — "cut more" or "cut less" — and several
+ * internal settings move together to express it, so they never have to reason
+ * about a level gate, a peak floor and a voice weight separately. At 0 the
+ * configuration is exactly what it was before the knob existed; raising it
+ * makes the stage progressively harder to convince, and the trade is the one
+ * that prompted this: loud music with talking over it stops being cut, and the
+ * dialogue mixed into music stops being cut with it.
+ *
+ * Measured across the corpus, raising it moves 146 segments / 1417s to
+ * 96 / 1014s, and the segments it gives up are the arguable ones.
+ */
+const STRICTNESS_KEY = 'sleep-filter.strictness.v1';
+
+function strictness() {
+  const raw = Number($('strictness').value);
+  return Number.isFinite(raw) ? Math.min(1, Math.max(0, raw / 100)) : 0;
+}
+
+/**
+ * How the single knob maps onto the settings that actually exist.
+ *
+ * Raising the voice weight alone would be a narrow control — it moves the
+ * corpus from 146 segments/1417s to 139/1342s, because only voice-heavy
+ * segments are affected. The peak floor gives it range without the cost that
+ * tightening the level gate carries: measured, coupling the gate as well drops
+ * theme coverage from 18/18 episodes to 14, where this keeps 17.
+ */
+function stageOptions() {
+  const t = strictness();
+  return {
+    speechWeight: t,            // how much voice-likeness counts against music
+    peakFrac: 0.7 + 0.3 * t,    // how prominent a run must be to count
+  };
+}
+
+function renderStrictnessHint() {
+  const t = strictness();
+  $('strictnessHint').textContent = t === 0
+    ? 'Anything music-like is cut, including dialogue mixed with music.'
+    : t >= 1
+      ? 'Only clear music is cut, so loud music with talking over it is left in.'
+      : 'Dialogue mixed with music is left in; some loud music under talking is too.';
+}
+
+function applyStrictness() {
+  try { localStorage.setItem(STRICTNESS_KEY, $('strictness').value); } catch { /* no storage */ }
+  renderStrictnessHint();
+  // Only the music stage depends on this, so there is no need to re-discover
+  // anything or re-decode a frame — recomputing phase 2 is enough.
+  if (state.library) { computeMusic(); renderMusic(); }
+}
+
+{
+  // Guarded: reading localStorage can throw outright when storage is disabled,
+  // and this runs at module scope, where an exception would kill the page.
+  let saved = NaN;
+  try { saved = Number(localStorage.getItem(STRICTNESS_KEY)); } catch { /* no storage */ }
+  if (Number.isFinite(saved) && saved >= 0 && saved <= 100) $('strictness').value = String(saved);
+  renderStrictnessHint();
+  // `change` rather than `input`: dragging fires continuously, and each one
+  // would re-segment every episode.
+  $('strictness').onchange = () => applyStrictness();
+}
+
+/**
  * Propose per-episode music segments. Everything is enabled by default — the
  * user unticks what they want to keep, rather than hunting for what to remove.
  */
@@ -855,7 +922,11 @@ function computeMusic() {
   const exemplar = clips.length ? clips : foregroundMusicExemplar(state.analyses);
   state.musicSeed = clips.length ? 'clips' : 'foreground';
   if (!exemplar.length) { state.music = []; return; }
-  state.music = musicRangesFor(state.library, exemplar, { exclude: themeRanges() }).map((r) => ({
+  // `levelSlack` is set by musicRangesFor itself; the rest comes from the knob.
+  state.music = musicRangesFor(state.library, exemplar, {
+    exclude: themeRanges(),
+    segment: stageOptions(),
+  }).map((r) => ({
     id: r.id,
     segments: r.segments,
     enabled: new Set(r.segments.map((_, i) => i)),

@@ -134,6 +134,35 @@ Hence three guards on top of the score:
   fine to keep*, and that is the quiet case.
 - **A ceiling** — one cue cannot exceed a quarter of the episode.
 
+### The one knob
+
+There is one user-facing setting for this stage, and it runs from *cut more* to
+*cut less*. Several internal settings move together to express it, so nobody has
+to reason about a peak floor, a level gate and a voice weight separately:
+
+| slider | peak floor | voice weight | corpus | theme coverage |
+|---|---|---|---|---|
+| cut more (0, the default) | 0.70 | 0 | 146 segments / 1417 s | 18/18 |
+| middle | 0.85 | 0.5 | 123 / 1264 s | 17/18 |
+| cut less (100) | 1.00 | 1 | 114 / 1202 s | 17/18 |
+
+At 0 the configuration is exactly what it was before the knob existed, which is
+why that is the default: adding the control changed no existing result. The
+setting is remembered between visits.
+
+What it trades is the case that prompted it. A passage of dialogue mixed with
+music, and a passage of loud music with people talking over it, are not
+separable by anything measured here — in both, the low band is mostly the music
+bed, and the one cue that sees a voice at all (`mod4Low`, the 80–300 Hz
+syllable-rate modulation) ranks the loud-music case as *more* voice-like than the
+dialogue. So the knob picks a side rather than reconciling them, and it moves
+both together: raising it protects dialogue and leaves loud music under talking.
+
+The voice weight is a scale on that cue's discriminant weight, 0 to 1, with the
+decision threshold recomputed at each setting — scaling a weight moves every
+score, so reusing the old threshold would change what counts as music as well as
+how much the cue matters.
+
 Where a segment *ends* is a separate tuned decision from whether it is music. A
 run is detected on a median-filtered score, which is robust but smears the
 boundary; each edge may then reach a fraction of the run's prominence below the
