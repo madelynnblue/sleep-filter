@@ -287,15 +287,34 @@ asserted **bit-identical** rather than close, because chroma positions every cut
   at **two files the votes smear across 100–200 s and nothing is found at all**.
   That is the 90 s guard rejecting a smear rather than a miss, and it is left
   that way on purpose — accepting it would cut minutes of dialogue.
-- **The single-file exemplar is a heuristic, not a detector.** With no common
-  clip it calibrates on the loudest, least speech-like 10 s it can find. That
-  recovers the theme's class separation on this corpus (1.81 against 1.63) and
-  keeps the known false positive out. It has been heard once: S01E06 on its own
-  proposes 7 segments, and all 7 were music worth removing. That is precision on
-  **one episode**, not recall — nothing has checked what it *missed* — and it is
-  one listener, so treat it as a spot check rather than a validation. It has also
-  never run on material that is not a TV episode: on a podcast or a music track
-  it will select something and calibrate on it with no way to know it chose well.
+- **The single-file exemplar is a heuristic, and no better one was found.** With
+  no common clip it calibrates on the 10 s maximising `level − 30·mod4`. That has
+  been heard once: S01E06 on its own proposes 7 segments and all 7 were music
+  worth removing — precision on **one episode**, not recall, from one listener.
+
+  It picks the **end credits** in most episodes, which is why it works: the
+  credits are real music. It fails when something louder and less modulated
+  outbids them, which is what happens in S02E05, where it selects 8:38 — a scene
+  of a man talking — and then naturally proposes that scene as music.
+
+  Six replacements were measured against the theme-seeded result (interval
+  Jaccard, meaned over 18 episodes; higher is better):
+
+  | picker | agreement | S02E05 picks |
+  |---|---|---|
+  | **`level − 30·mod4` (current)** | **0.724** | 8:38 talking |
+  | loudest | 0.557 | 2:57 theme |
+  | best 10 s within the last 45–120 s | 0.516–0.533 | credits |
+  | `chromaSelf + flatness` | 0.312 | 2:56 theme |
+  | credits, whole 40 s | 0.307 | — |
+  | `chromaSelf` | 0.191 | 7:45 |
+  | `flatness` | 0.091 | 13:16 |
+
+  So the obvious fixes are all worse on average, including restricting the search
+  to the credits — which fixes S02E05 and loses more elsewhere. The guess is
+  load-bearing and nothing hand-built beat it; removing the guess needs the user
+  to designate an example, not a better heuristic. It has also never run on
+  material that is not a TV episode.
 - **Extents run slightly short** against ground truth. The start is reliable; the
   tail is under-measured. Prefer padding the end over trusting the raw span.
 - **There is no working speech detector, and loud dialogue is the price.** Three
@@ -327,6 +346,33 @@ asserted **bit-identical** rather than close, because chroma positions every cut
 
   So loud dialogue with no music at all can be proposed, and no slider position
   fixes it. Untick it. This is a missing capability, not a mis-tuned number.
+- **A published music detector was ported and did not transfer.** Seyerlehner et
+  al., *Automatic Music Detection in Television Productions* (DAFx-07) is this
+  exact problem, and it proposes CFA (Continuous Frequency Activation): music is
+  sustained tones, so a few frequency bins stay active and the per-bin activation
+  function is "spiky". It binarises the spectrogram, which makes it
+  **level-invariant** — the one property this pipeline lacks. They report 89.9%
+  against 81.2% for machine learning on standard features.
+
+  Ported faithfully and checked on signals where the answer is known — sustained
+  tones 2.21, speech-like 0.77, noise 1.17, matching their documented failure mode
+  for continuous noise — it still does not separate this corpus: the seven S01E06
+  segments confirmed by ear score 0.94–1.13, and a passage of a man talking
+  scores 1.11, above five of the seven. Episode medians are 0.74–0.78.
+
+  The reason is the premise: this show's music is dense and broadband, so its
+  activations spread across bins and the peakiness collapses, while speech with
+  room tone and footsteps carries enough continuous activation to match. Worth
+  knowing before anyone re-derives it.
+
+  It did find one thing this pipeline misses, and it is the interesting part: a
+  cluster at 20:44 in S02E05 with CFA ~2.0, `chromaSelf` 0.838 and level −44 dB.
+  Music-like, and 6.8 dB below the level gate, so it is deliberately kept. A
+  level-invariant measure is what would be needed to reach audio like that.
+
+  The paper's other contribution is a negative one that agrees with the bullet
+  above: they *deliberately excluded* 4 Hz modulation energy, on the grounds that
+  it detects speech rather than music. It carries this pipeline's largest weight.
 - **Music under dialogue is out of scope by design** and is left in place.
 - **Detection is tuned on one show.** A second corpus would settle how much
   transfers.
