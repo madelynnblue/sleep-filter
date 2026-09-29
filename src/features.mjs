@@ -481,4 +481,182 @@ export function segment(scores, fps, opts = {}) {
   return out;
 }
 
+/* ---------------------------------------------------------------- CFA -- */
+
+/**
+ * Continuous Frequency Activation, after the DAFx-07 paper
+ * (https://dafx.labri.fr/main/papers/p221.pdf).
+ *
+ * The idea: a sustained musical tone lights up the SAME narrow band for seconds
+ * at a time, while speech sweeps its formants around and broadband noise never
+ * concentrates. So: take a dB spectrogram, subtract a local mean across
+ * frequency to flatten the timbral envelope, binarise what is left, and measure
+ * how peaked each frequency band's activation is over a ~2 second window.
+ *
+ * A peak prominence is `min(leftDrop, rightDrop) / halfWidth`: high when a band
+ * sits well above both of its neighbours AND the peak is narrow. Summing the top
+ * five prominences gives a per-window score that is level-invariant, since the
+ * local-mean subtraction removes the overall gain.
+ *
+ * Rate
+ * ----
+ * This runs at 11.025 kHz, NOT at the pipeline's 8 kHz feature rate. Porting it
+ * to 8 kHz was tried and measured against the 56 hand-judged rows: it is worse,
+ * and no choice of the two free parameters recovers the surveyed behaviour.
+ *
+ *   CFA config                     CFA alone        OR rule (season+chromaSelf+CFA)
+ *   11.025 kHz, 21 bins, 100 fr    13 hit / 0 FA    20 hit / 0 FA / F1 0.80
+ *   8 kHz, 21 bins, 100 fr         11 / 0           18 / 0 / 0.75
+ *   8 kHz, 21 bins, 72 fr          11 / 0           17 / 0 / 0.72
+ *   8 kHz, 29 bins (Hz-matched)    14 / 0           18 / 0 / 0.75
+ *   8 kHz, 29 bins, 72 fr          12 / 0           18 / 0 / 0.75
+ *
+ * The Hz-matched 8 kHz variant is actually BETTER standalone yet still worse in
+ * the OR: it fires on different rows, and all four 8 kHz variants miss the same
+ * three music rows that only 11 kHz CFA catches. So this is not a tuning
+ * problem, and the extra resample stream is worth its cost.
+ *
+ * @param {Float32Array} samples mono, at `opts.sampleRate`
+ * @param {object} opts
+ * @param {number} opts.sampleRate  should be CFA_SAMPLE_RATE
+ * @param {number} opts.nFrames     output length, on the feature frame grid
+ * @param {number} opts.frameRate   feature frame rate, to align block centres
+ * @returns {Float32Array} one activation score per feature frame
+ */
+export const CFA_SAMPLE_RATE = 11025;
+const CFA_NFFT = 1024;
+const CFA_HOP = 256;
+/** Local-mean window across frequency, in bins. 21 bins is ~226 Hz at 11 kHz. */
+const CFA_EMPH_BINS = 21;
+/** Frames per activation block, 50% overlapped. 100 frames is ~2.3 s at 11 kHz. */
+const CFA_BLOCK = 100;
+const CFA_STEP = CFA_BLOCK >> 1;
+const CFA_TOP = 5;
+/** dB above the local mean before a band counts as active. */
+const CFA_THRESHOLD_DB = 0.1;
+
+export function computeCFA(samples, opts = {}) {
+  const { sampleRate, nFrames, frameRate, onProgress } = opts;
+  if (!(sampleRate > 0)) throw new Error('computeCFA needs opts.sampleRate');
+  if (!(nFrames > 0)) throw new Error('computeCFA needs opts.nFrames');
+  if (!(frameRate > 0)) throw new Error('computeCFA needs opts.frameRate');
+
+  const NB = CFA_NFFT / 2 + 1;
+  const fft = makeFFT(CFA_NFFT);
+  const win = new Float64Array(CFA_NFFT);
+  for (let i = 0; i < CFA_NFFT; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / CFA_NFFT);
+  const re = new Float64Array(CFA_NFFT);
+  const mag = new Float32Array(NB);
+  const power = new Float32Array(NB);
+  const scratch = new Float64Array(CFA_NFFT);
+  const db = new Float32Array(NB);
+
+  const nSTFT = Math.max(0, Math.floor((samples.length - CFA_NFFT) / CFA_HOP) + 1);
+  // One byte per time-frequency cell: is this band above its local mean?
+  const active = new Uint8Array(nSTFT * NB);
+  const half = (CFA_EMPH_BINS - 1) >> 1;
+  const report = typeof onProgress === 'function' ? onProgress : null;
+  const tickEvery = Math.max(1, Math.floor(nSTFT / 50));
+
+  for (let t = 0; t < nSTFT; t++) {
+    const off = t * CFA_HOP;
+    for (let i = 0; i < CFA_NFFT; i++) re[i] = samples[off + i] * win[i];
+    realSpectrum(re, fft, mag, power, scratch);
+    // Floor the dB scale RELATIVE to this frame's own peak, not absolutely.
+    //
+    // The local-mean subtraction cancels a constant gain exactly, so a fixed
+    // absolute floor is the one thing that can break the level invariance the
+    // whole feature rests on: with `power + 1e-12` every near-empty bin pins at
+    // -120 dB no matter how loud the audio is, so attenuating the signal does not
+    // shift the spectrogram rigidly — it clamps MORE bins. Measured on a
+    // synthetic tone, attenuating by 40 dB distorted individual bins by up to
+    // 71 dB and moved the mean score by 20%.
+    //
+    // On real material the floor never bites (-120 dB below the frame peak is
+    // below any real noise floor), which is why this reproduces the surveyed
+    // series bit-exactly; it matters for the quiet clusters the level gate
+    // deliberately keeps.
+    let peakPower = 0;
+    for (let k = 0; k < NB; k++) if (power[k] > peakPower) peakPower = power[k];
+    const silence = !(peakPower > 0);
+    const floorDb = silence ? -200 : 10 * Math.log10(peakPower) - 120;
+    let acc = 0;
+    for (let k = 0; k < NB; k++) {
+      db[k] = silence || power[k] <= 0 ? floorDb : Math.max(10 * Math.log10(power[k]), floorDb);
+      if (k <= half) acc += db[k];
+    }
+    // Sliding local mean over the whole window, clipped at both ends so the
+    // first and last bins are compared against a one-sided mean rather than a
+    // mean that wraps or is artificially low.
+    for (let k = 0; k < NB; k++) {
+      const add = k + half + 1, drop = k - half - 1;
+      if (add < NB) acc += db[add];
+      if (drop >= 0) acc -= db[drop];
+      const lo = k - half > 0 ? k - half : 0;
+      const hi = k + half < NB - 1 ? k + half : NB - 1;
+      active[t * NB + k] = (db[k] - acc / (hi - lo + 1)) > CFA_THRESHOLD_DB ? 1 : 0;
+    }
+    if (report && t % tickEvery === 0) report(t / Math.max(1, nSTFT));
+  }
+  report?.(1);
+
+  // Block activation, one block every CFA_STEP frames.
+  const nBlocks = nSTFT >= CFA_BLOCK ? Math.floor((nSTFT - CFA_BLOCK) / CFA_STEP) + 1 : 0;
+  const blockAt = new Float64Array(nBlocks);
+  const blockScore = new Float32Array(nBlocks);
+  const act = new Float32Array(NB);
+  const prominence = new Float64Array(NB);
+  for (let b = 0; b < nBlocks; b++) {
+    const s = b * CFA_STEP;
+    act.fill(0);
+    for (let j = s; j < s + CFA_BLOCK; j++) {
+      const base = j * NB;
+      for (let k = 0; k < NB; k++) act[k] += active[base + k];
+    }
+    for (let k = 0; k < NB; k++) act[k] /= CFA_BLOCK;
+
+    let np = 0;
+    for (let p = 1; p < NB - 1; p++) {
+      if (!(act[p] > act[p - 1] && act[p] >= act[p + 1])) continue;
+      let l = p - 1;
+      while (l > 0 && act[l] > act[l - 1]) l--;
+      let r = p + 1;
+      while (r < NB - 1 && act[r] > act[r + 1]) r++;
+      const dl = act[p] - act[l], dr = act[p] - act[r];
+      const drop = dl < dr ? dl : dr;
+      const width = dl < dr ? p - l : r - p;
+      prominence[np++] = drop / (width > 0 ? width : 1);
+    }
+    // Top CFA_TOP prominences, by selection rather than a full sort.
+    let sum = 0;
+    for (let i = 0; i < CFA_TOP && i < np; i++) {
+      let best = i;
+      for (let j = i + 1; j < np; j++) if (prominence[j] > prominence[best]) best = j;
+      const tmp = prominence[i]; prominence[i] = prominence[best]; prominence[best] = tmp;
+      sum += prominence[i];
+    }
+    // The centre of the block: the middle STFT frame's window midpoint, so the
+    // window's own half-length counts. Omitting it (using s*HOP + BLOCK/2*HOP)
+    // shifts every block 46 ms early, which is enough to move the nearest-block
+    // choice for ~4% of frames and cost 4% agreement with the surveyed column.
+    blockAt[b] = ((s + CFA_BLOCK / 2) * CFA_HOP + CFA_NFFT / 2) / sampleRate;
+    blockScore[b] = sum;
+  }
+
+  // Resample the block series onto the feature frame grid by nearest block
+  // centre. Both sequences ascend, so one forward-only cursor does it in linear
+  // time (a scan per frame is 20k x 40k comparisons and was the slowest part).
+  const out = new Float32Array(nFrames);
+  if (!nBlocks) return out;
+  let cur = 0;
+  for (let t = 0; t < nFrames; t++) {
+    const time = t / frameRate;
+    // strict `<`, so a tie keeps the earlier block — matching the exhaustive
+    // first-minimum scan this replaced
+    while (cur < nBlocks - 1 && Math.abs(blockAt[cur + 1] - time) < Math.abs(blockAt[cur] - time)) cur++;
+    out[t] = blockScore[cur];
+  }
+  return out;
+}
+
 export { NFEAT };

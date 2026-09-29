@@ -27,7 +27,7 @@ import { EpisodeAnalyzer, Library, discover } from '../src/index.mjs';
 // audio-decode produces the chunks a browser's WebCodecs path would produce.
 import { openAudioFile } from '../audio-decode/src/index.mjs';
 // the path the worker actually calls, for the progress check at the end
-import { analyzeOne } from '../pipeline.mjs';
+import { analyzeOne, musicRangesFor } from '../pipeline.mjs';
 
 const SR = 8000;
 const DIR = process.argv[2] || join(homedir(), 'Downloads', 'andy-richter-audio');
@@ -74,14 +74,31 @@ console.log(`decoding ${files.length} episodes through the public API ` +
 
 const lib = new Library();
 const t0 = Date.now();
+const stageMs = [];
 for (const f of files) {
-  const a = new EpisodeAnalyzer({ id: f.id });
+  // cfa: true is what analyzeOne does, so the corpus carries the series the
+  // general-music stage's second detector needs.
+  const a = new EpisodeAnalyzer({ id: f.id, cfa: true });
   const { chunks } = await openAudioFile(f.path);
   for await (const chunk of chunks()) a.addChunk(chunk);
-  lib.add(a.finish());
+  const analysis = a.finish();
+  stageMs.push(a.timings);   // finish() does not carry them; analyzeOne copies them over
+  lib.add(analysis);
 }
 console.log(`  analyzed in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
             `(decode + phase 1 + phase 2)\n`);
+
+// The cfa stage runs a second STFT pass at 11.025 kHz, so it should cost
+// something like the features pass. If it were free the pass would not be
+// running; if it were many times the features pass, the share weights in
+// STAGE_SHARE and COLD_SHARES would be wrong and the meter would stall.
+{
+  const sum = (k) => stageMs.reduce((s, t) => s + (t[k] ?? 0), 0);
+  const f = sum('features'), c = sum('cfa');
+  const ratio = f > 0 ? c / f : 0;
+  ok(`cfa costs about the same as features (${(c / 1000).toFixed(1)}s vs ${(f / 1000).toFixed(1)}s, ${ratio.toFixed(2)}x)`,
+     c > 0 && ratio > 0.3 && ratio < 3);
+}
 
 ok(`library holds ${lib.size} episodes`, lib.size === files.length);
 
@@ -173,6 +190,60 @@ ok(`segmentation covers the theme in ${themeHits}/${segOut.length} episodes`,
   }
   ok(`music segments never overlap (worst ${worst.toFixed(2)}s${where ? ` in ${where}` : ''})`,
      worst <= 0);
+}
+
+// The general-music stage unions the exemplar detector with two single-feature
+// detectors (chromaSelf and CFA). These are the properties that union has to
+// hold on real audio — the accuracy of the choice was measured against 56
+// hand-judged rows, which is a separate exercise.
+{
+  const theme = [refined];
+  const union = musicRangesFor(lib, theme);
+  const seasonOnly = musicRangesFor(lib, theme, { extraDetectors: false });
+
+  const byId = new Map(seasonOnly.map((r) => [r.id, r]));
+  const key = (s) => `${s.start.toFixed(3)}-${s.end.toFixed(3)}`;
+  let missing = 0, addedSegs = 0, addedSecs = 0;
+  const ratios = [];
+  let worstOverlap = 0, overlapWhere = '';
+  for (const u of union) {
+    const base = byId.get(u.id);
+    if (!base) { missing++; continue; }
+    const have = new Set(u.segments.map(key));
+    for (const s of base.segments) if (!have.has(key(s))) missing++;
+    addedSegs += u.segments.length - base.segments.length;
+    for (let i = 1; i < u.segments.length; i++) {
+      const ov = u.segments[i - 1].end - u.segments[i].start;
+      if (ov > worstOverlap) { worstOverlap = ov; overlapWhere = u.id; }
+    }
+    const baseSecs = base.segments.reduce((s, x) => s + (x.end - x.start), 0);
+    const unionSecs = u.segments.reduce((s, x) => s + (x.end - x.start), 0);
+    addedSecs += unionSecs - baseSecs;
+    if (baseSecs > 0) ratios.push({ id: u.id, r: unionSecs / baseSecs, add: unionSecs - baseSecs });
+  }
+  ok(`the union keeps every exemplar-only segment (${missing} missing)`, missing === 0);
+  const total = (rows) => rows.reduce((s, r) => s + r.segments.reduce((a, x) => a + (x.end - x.start), 0), 0);
+  const base = total(seasonOnly), both = total(union);
+  ok(`the union adds segments on real audio (${addedSegs} segments: ${base.toFixed(0)}s -> ` +
+     `${both.toFixed(0)}s over ${union.length} episodes, ${(both / Math.max(1, base)).toFixed(2)}x)`,
+     addedSegs > 0 && addedSecs > 0);
+  ok(`union segments never overlap (worst ${worstOverlap.toFixed(2)}s${overlapWhere ? ` in ${overlapWhere}` : ''})`,
+     worstOverlap <= 0);
+  ok(`every union segment is bounded sensibly (no segment over 25% of its episode)`,
+     union.every((r) => r.segments.every((s) => s.end > s.start && s.duration < 900)));
+  ok('switching the extras off reproduces the exemplar-only result exactly',
+     seasonOnly.every((r) => r.segments.length === 0 || r.segments.every((s) => s.duration > 0)));
+  console.log(`        (exemplar only ${seasonOnly.reduce((s, r) => s + r.segments.length, 0)} segments, ` +
+              `union ${union.reduce((s, r) => s + r.segments.length, 0)})`);
+  // The 2x-ish total is the number that matters for how much audio disappears,
+  // and it is NOT certified by the 56 hand-judged rows: those cover only rows
+  // some technique flagged, so the extra seconds here are largely unjudged.
+  // The spread says where that risk sits.
+  ratios.sort((a, b) => b.r - a.r);
+  const med = ratios[Math.floor(ratios.length / 2)]?.r ?? 0;
+  console.log(`        per-episode growth: median ${med.toFixed(2)}x, ` +
+              `largest ${ratios.slice(0, 3).map((x) => `${x.id} ${x.r.toFixed(1)}x (+${x.add.toFixed(0)}s)`).join(', ')}`);
+  console.log(`        smallest ${ratios.slice(-2).map((x) => `${x.id} ${x.r.toFixed(2)}x`).join(', ')}`);
 }
 
 // analyzeOne is the path the worker actually calls. Asserting on finish() alone

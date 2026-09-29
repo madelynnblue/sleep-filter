@@ -19,7 +19,7 @@
  *   const music  = lib.segment(assets[0]);   // where the music is, per episode
  */
 
-export { EpisodeAnalyzer, segmentEpisode } from './episode.mjs';
+export { EpisodeAnalyzer, segmentEpisode, segmentBySeries } from './episode.mjs';
 export { Library } from './library.mjs';
 export {
   MonoResampler, describeChunk, downmixInto, toMonoAt, DEFAULT_SAMPLE_RATE,

@@ -10,7 +10,7 @@
  *   general music   music within a single episode (interludes, songs, credits)
  */
 
-import { EpisodeAnalyzer, Library, segmentEpisode } from './src/index.mjs';
+import { EpisodeAnalyzer, Library, segmentEpisode, segmentBySeries } from './src/index.mjs';
 import { FEATURE_NAMES, NFEAT } from './src/features.mjs';
 import {
   openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
@@ -68,7 +68,10 @@ export async function readTitleTag(source) {
  * worker in the browser.
  */
 export async function analyzeOne(source, id, opts = {}) {
-  const analyzer = new EpisodeAnalyzer({ id, shares: opts.shares });
+  // cfa drives one of the general-music stage's two extra detectors. It needs
+  // its own 11.025 kHz resample stream and costs ~1.4x the feature pass, so it
+  // is opt-out rather than unconditional: `cfa: false` skips it.
+  const analyzer = new EpisodeAnalyzer({ id, shares: opts.shares, cfa: opts.cfa !== false });
   const t0 = performance.now();
   const { info, chunks, backend } = await openAudioFile(source, opts.decode);
   if (info?.duration) analyzer.expectedFrames = Math.round(info.duration * analyzer.targetSampleRate);
@@ -210,18 +213,82 @@ export function musicRangesFor(library, assets, opts = {}) {
       // exemplars. Music the user wants gone is foreground music; the false
       // positives are quiet passages that merely resemble it in timbre, which is
       // the audio that should stay.
-      const { segments, calibration } = segmentEpisode(ep, ranges, { levelSlack: 8, ...(opts.segment ?? {}) });
+      const segOpts = { levelSlack: 8, ...(opts.segment ?? {}) };
+      const { segments, calibration } = segmentEpisode(ep, ranges, segOpts);
+      let merged = segments;
+      let extraError = null;
+      if (opts.extraDetectors !== false) {
+        try {
+          merged = withExtraDetectors(ep, ranges, segments, segOpts);
+        } catch (err) {
+          // An extra detector failing must not cost the episode its exemplar
+          // segments: they were computed successfully and are strictly better
+          // than proposing nothing. Surfaced rather than swallowed.
+          extraError = err.message;
+        }
+      }
       const taken = opts.exclude?.get(id);
-      const kept = taken?.length ? segments.filter((s) => !overlapsAny(s, taken)) : segments;
+      const kept = taken?.length ? merged.filter((s) => !overlapsAny(s, taken)) : merged;
       // separation says how well the exemplar separated music from everything
       // else in this episode, so a weak one is worth surfacing: the single-file
       // fallback measures near the theme, but that is not guaranteed.
-      out.push({ id, segments: kept, ranges: rangesFromSegments(kept), separation: calibration.separation });
+      out.push({
+        id, segments: kept, ranges: rangesFromSegments(kept),
+        separation: calibration.separation, extraError,
+      });
     } catch (err) {
       out.push({ id, segments: [], ranges: [], error: err.message });
     }
   }
   return out;
+}
+
+/** Column index of the chroma self-similarity feature. */
+const CHROMA_SELF = FEATURE_NAMES.indexOf('chromaSelf');
+
+/**
+ * Union the exemplar-driven segments with two single-feature detectors.
+ *
+ * The exemplar detector ("does this look like the title theme?") is the most
+ * precise thing here but it only fires on music that resembles the theme, so it
+ * misses cues, interludes and songs. Both extras ask a narrower question of one
+ * series each, thresholded at their own midpoint between "like the music
+ * exemplars" and "like the rest of the episode":
+ *
+ *   chromaSelf  harmony that holds still and repeats
+ *   CFA         a sustained narrow-band tone, level-invariant (see computeCFA)
+ *
+ * Measured on 56 hand-judged rows across three episodes, each detector alone
+ * scores 100% precision and the two are close to disjoint: they add 4 and 4
+ * unique music rows respectively, and 1 row in common. Together the union goes
+ * from 11 hits / 0 false alarms (exemplar alone) to 20 / 0.
+ *
+ * No widening: an extra is dropped when it overlaps anything already kept. The
+ * extras' bounds are wider than the exemplar's on rows they agree about, and a
+ * single verdict per row does not certify that the extra seconds are music —
+ * 53% of the union's added seconds would be that kind of widening. Filling only
+ * the gaps keeps every second attributable to a segment some detector found on
+ * its own.
+ */
+function withExtraDetectors(ep, ranges, base, segOpts) {
+  const F = ep.features;
+  const extras = [];
+  if (ep.cfa?.length === F.nFrames) {
+    extras.push(segmentBySeries(ep, ranges, ep.cfa, { ...segOpts, direction: 1 }));
+  }
+  const chromaSelf = new Float32Array(F.nFrames);
+  for (let t = 0; t < F.nFrames; t++) chromaSelf[t] = F.feats[t * NFEAT + CHROMA_SELF];
+  extras.push(segmentBySeries(ep, ranges, chromaSelf, { ...segOpts, direction: 1 }));
+
+  const kept = [...base];
+  for (const group of extras) {
+    for (const s of group) {
+      if (kept.some((k) => s.start < k.end && k.start < s.end)) continue;
+      kept.push(s);
+    }
+  }
+  kept.sort((a, b) => a.start - b.start);
+  return kept;
 }
 
 /** Cut and re-mux one file. Returns encoded bytes. */

@@ -20,7 +20,7 @@
 import { MonoResampler, DEFAULT_SAMPLE_RATE, toMonoAt } from './audio.mjs';
 import { computeChroma } from './chroma.mjs';
 import { fingerprint } from './discovery.mjs';
-import { computeFeatures, calibrate, scoreFrames, segment, NFEAT } from './features.mjs';
+import { computeFeatures, computeCFA, CFA_SAMPLE_RATE, calibrate, scoreFrames, segment, NFEAT } from './features.mjs';
 
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
 
@@ -34,12 +34,19 @@ const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
  * for a chroma pass of its own that finish() had already run. That duplicate is
  * gone, and these numbers are what the app actually spends.
  *
+ * `cfa` is a late addition, weighted from a direct per-episode measurement on
+ * 22-minute episodes: decode 2.3s, features 1.3s, cfa 1.9s, fingerprints 0.5s.
+ * It runs at 11.025 kHz on its own resample stream and so costs ~1.4x the
+ * features pass — see computeCFA for why the pipeline's 8 kHz rate is not
+ * usable. (The 19-episode integration aggregate puts it lower, at 1.17x; the
+ * direct figure is the one this profile is built from.)
+ *
  * Used only to weight the progress figure. The decode share is backend-dependent
  * — WebCodecs decodes off the main thread, the ffmpeg fallback spawns a process —
  * so this is approximate by design; the property that matters is that the meter
  * keeps moving at a roughly even rate.
  */
-const STAGE_SHARE = { decode: 0.475, chroma: 0, features: 0.375, fingerprints: 0.15 };
+const STAGE_SHARE = { decode: 0.383, chroma: 0, features: 0.219, fingerprints: 0.080, cfa: 0.318 };
 
 /**
  * Profile for the un-fused path, used only when just one of chroma/segments is
@@ -47,7 +54,7 @@ const STAGE_SHARE = { decode: 0.475, chroma: 0, features: 0.375, fingerprints: 0
  * whole STFT pass — so its split is genuinely different and cannot be derived
  * from this one.
  */
-const STAGE_SHARE_SPLIT = { decode: 0.40, chroma: 0.178, features: 0.293, fingerprints: 0.127 };
+const STAGE_SHARE_SPLIT = { decode: 0.284, chroma: 0.126, features: 0.208, fingerprints: 0.090, cfa: 0.291 };
 
 /**
  * Weights for the stages that will actually run, summing to 1.
@@ -56,14 +63,15 @@ const STAGE_SHARE_SPLIT = { decode: 0.40, chroma: 0.178, features: 0.293, finger
  * both — chroma's share belongs to features there, or the meter tops out short
  * of the end.
  */
-function normaliseShares(shares, { chroma, features, fingerprints, foldChromaIntoFeatures = false }) {
+function normaliseShares(shares, { chroma, features, fingerprints, cfa = false, foldChromaIntoFeatures = false }) {
   const w = { decode: shares.decode ?? 0 };
   w.chroma = chroma ? (shares.chroma ?? 0) : 0;
   w.features = (features ? (shares.features ?? 0) : 0) +
                (foldChromaIntoFeatures ? (shares.chroma ?? 0) : 0);
   w.fingerprints = fingerprints ? (shares.fingerprints ?? 0) : 0;
-  const total = w.decode + w.chroma + w.features + w.fingerprints;
-  if (!(total > 0)) return { decode: 1, chroma: 0, features: 0, fingerprints: 0 };
+  w.cfa = cfa ? (shares.cfa ?? 0) : 0;
+  const total = w.decode + w.chroma + w.features + w.fingerprints + w.cfa;
+  if (!(total > 0)) return { decode: 1, chroma: 0, features: 0, fingerprints: 0, cfa: 0 };
   for (const k of Object.keys(w)) w[k] /= total;
   return w;
 }
@@ -130,23 +138,29 @@ export class EpisodeAnalyzer {
    *        shares measured on the reference corpus, but the decode share is
    *        backend-dependent, so callers that can measure their own (the page
    *        does) should pass those instead.
+   * @param {boolean} [opts.cfa=false]  also run the Continuous Frequency
+   *        Activation pass. It needs 11.025 kHz, so it resamples a second stream
+   *        alongside the feature one and costs ~1.4x `features`.
    */
   constructor(opts = {}) {
     this.id = opts.id ?? 'episode-1';
     this.targetSampleRate = opts.targetSampleRate ?? DEFAULT_SAMPLE_RATE;
     this.inputSampleRate = opts.inputSampleRate ?? null;
     this.inputChannels = opts.inputChannels ?? null;
+    this.analyzeCFA = opts.cfa === true;
     this._customShares = opts.shares ?? null;
     this.shares = this._customShares ?? STAGE_SHARE;
-    this._w = normaliseShares(this.shares, { chroma: true, features: true, fingerprints: true });
+    this._w = normaliseShares(this.shares, { chroma: true, features: true, fingerprints: true, cfa: this.analyzeCFA });
     this.timings = {};             // ms spent per stage, filled in as they run
     this._resampler = null;
+    this._cfaResampler = null;
     this._samples = new SampleBuffer();
+    this._cfaSamples = new SampleBuffer();
     this._expectedFrames = 0;
     this._receivedFrames = 0;
     this._decodeDone = false;
     // fraction done within each finish() stage, folded into `progress`
-    this._stage = { chroma: 0, fingerprints: 0, features: 0 };
+    this._stage = { chroma: 0, fingerprints: 0, features: 0, cfa: 0 };
   }
 
   /** Feed one AudioChunk (see audio.mjs for the shape). Returns samples added. */
@@ -172,16 +186,33 @@ export class EpisodeAnalyzer {
     // for the rest of the decode.
     this._receivedFrames += mono.length;
     if (mono.length) this._samples.push(mono);
+    if (this.analyzeCFA) {
+      if (!this._cfaResampler) {
+        this._cfaResampler = new MonoResampler({
+          inputRate: chunk.sampleRate,
+          outputRate: CFA_SAMPLE_RATE,
+          channels: chunk.numberOfChannels,
+        });
+      }
+      const hi = this._cfaResampler.process(chunk);
+      if (hi.length) this._cfaSamples.push(hi);
+    }
     return mono.length;
   }
 
   /** Convenience for already-decoded data (no streaming). */
-  static fromSamples({ id, data, sampleRate, channels = 1, targetSampleRate = DEFAULT_SAMPLE_RATE }) {
+  static fromSamples({ id, data, sampleRate, channels = 1, targetSampleRate = DEFAULT_SAMPLE_RATE, cfa = false }) {
     const a = new EpisodeAnalyzer({
-      id, targetSampleRate, inputSampleRate: sampleRate, inputChannels: channels,
+      id, targetSampleRate, inputSampleRate: sampleRate, inputChannels: channels, cfa,
     });
     const mono = toMonoAt(data, { sampleRate, channels, targetRate: targetSampleRate });
     if (mono.length) a._samples.push(mono);
+    // The CFA stream is resampled independently rather than from the 8 kHz
+    // buffer: upsampling would not bring back the 4-5.5 kHz band it needs.
+    if (cfa) {
+      const hi = toMonoAt(data, { sampleRate, channels, targetRate: CFA_SAMPLE_RATE });
+      if (hi.length) a._cfaSamples.push(hi);
+    }
     a._receivedFrames = mono.length;   // target-rate frames, as in addChunk
     return a;
   }
@@ -214,6 +245,7 @@ export class EpisodeAnalyzer {
       (w.decode ?? 0) * decodeFrac +
       (w.chroma ?? 0) * this._stage.chroma +
       (w.features ?? 0) * this._stage.features +
+      (w.cfa ?? 0) * this._stage.cfa +
       (w.fingerprints ?? 0) * this._stage.fingerprints);
   }
   set expectedFrames(n) { this._expectedFrames = n; }
@@ -234,6 +266,8 @@ export class EpisodeAnalyzer {
       this._customShares ?? (chroma && segments ? STAGE_SHARE : STAGE_SHARE_SPLIT),
       {
         chroma: chroma && !segments, features: segments, fingerprints,
+        // CFA consumes the feature frame grid, so it only exists alongside it
+        cfa: this.analyzeCFA && segments,
         foldChromaIntoFeatures: chroma && segments,
       });
     const samples = this._samples.view();
@@ -277,6 +311,14 @@ export class EpisodeAnalyzer {
       }));
     }
     if (fingerprints) out.fingerprints = run('fingerprints', (p) => fingerprint(samples, { sampleRate, onProgress: p }));
+    // After features, which supply the frame grid its block series is aligned to,
+    // and on its own 11.025 kHz stream — see computeCFA for why not 8 kHz.
+    if (this.analyzeCFA && segments && out.features) {
+      const { nFrames, frameRate } = out.features;
+      out.cfa = run('cfa', (p) => computeCFA(this._cfaSamples.view(), {
+        sampleRate: CFA_SAMPLE_RATE, nFrames, frameRate, onProgress: p,
+      }));
+    }
     return out;
   }
 }
@@ -307,6 +349,47 @@ export function segmentEpisode(episode, positiveRanges, opts = {}) {
     calibration: cal,
     segments: gateByLevel(segments, F, positiveRanges, opts.levelSlack ?? 0),
   };
+}
+
+/**
+ * One-feature detector, calibrated the same way segmentEpisode is.
+ *
+ * `series` is any per-frame score — a feature column, or a pass of its own like
+ * CFA. Rather than an absolute threshold (which does not transfer between shows)
+ * the threshold is the midpoint between the series' mean over the known music
+ * ranges and its mean over everything else, so the detector asks "does this frame
+ * look more like the music we know than like the rest of the episode?"
+ *
+ * This is the shape the technique survey scored, so the numbers measured there
+ * apply to it directly: given the same series it returns the same segments.
+ *
+ * @param {number} [opts.direction=1] +1 when music is the HIGH side of `series`
+ */
+export function segmentBySeries(episode, positiveRanges, series, opts = {}) {
+  const F = episode.features;
+  if (!F) throw new Error('episode.features missing — call finish() with segments: true');
+  if (!series) throw new Error('segmentBySeries needs a series');
+  if (series.length !== F.nFrames) {
+    throw new Error(`series has ${series.length} frames, episode has ${F.nFrames}`);
+  }
+  const { direction = 1, ...segOpts } = opts;
+  const score = new Float32Array(F.nFrames);
+  for (let t = 0; t < F.nFrames; t++) score[t] = direction * series[t];
+
+  const mask = new Uint8Array(F.nFrames);
+  for (const [a, b] of positiveRanges) {
+    const i0 = Math.max(0, Math.round(a * F.frameRate));
+    const i1 = Math.min(F.nFrames, Math.round(b * F.frameRate));
+    for (let t = i0; t < i1; t++) mask[t] = 1;
+  }
+  let pSum = 0, pN = 0, nSum = 0, nN = 0;
+  for (let t = 0; t < F.nFrames; t++) {
+    if (mask[t]) { pSum += score[t]; pN++; } else { nSum += score[t]; nN++; }
+  }
+  if (!pN || !nN) throw new Error('segmentBySeries needs frames both inside and outside the music ranges');
+  const posMean = pSum / pN, restMean = nSum / nN;
+  const segments = segment(score, F.frameRate, { mid: (posMean + restMean) / 2, posMean, ...segOpts });
+  return gateByLevel(segments, F, positiveRanges, opts.levelSlack ?? 0);
 }
 
 export { calibrate, scoreFrames, segment };

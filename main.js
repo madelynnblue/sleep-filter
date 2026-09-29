@@ -28,14 +28,18 @@ const $ = (id) => document.getElementById(id);
  * using those in a page put the meter at 27% when half the wall clock had
  * passed: the bar crawled, then raced, then the fingerprints share flashed by.
  *
- * PCM has no decode step worth the name, so its split is just the two JS stages
- * in the ratio they measure at under Node (72:28). That one is derived rather
+ * PCM has no decode step worth the name, so its split is just the JS stages in
+ * the ratio they measure at under Node (72:28). That one is derived rather
  * than measured, on the grounds that those stages are the same JavaScript on
  * either backend and only decode differs.
+ *
+ * `cfa` is pure JavaScript FFT work, the same code on either backend, so it
+ * scales with `features` — measured at ~1.4x its cost, and both are cut
+ * proportionally against the measured decode share.
  */
 const COLD_SHARES = {
-  webcodecs: { decode: 0.88, chroma: 0, features: 0.09, fingerprints: 0.03 },
-  pcm: { decode: 0.05, chroma: 0, features: 0.68, fingerprints: 0.27 },
+  webcodecs: { decode: 0.782, chroma: 0, features: 0.080, fingerprints: 0.026, cfa: 0.112 },
+  pcm: { decode: 0.026, chroma: 0, features: 0.348, fingerprints: 0.138, cfa: 0.488 },
 };
 
 /** Which decoder a file will take, from its extension. Mirrors audio-decode. */
@@ -309,7 +313,7 @@ function setStatus(text, isError = false) {
  */
 function learnShares(timings, backend) {
   if (!timings) return;
-  const stages = ['decode', 'chroma', 'fingerprints', 'features'];
+  const stages = ['decode', 'chroma', 'fingerprints', 'features', 'cfa'];
   const total = stages.reduce((s, k) => s + (timings[k] > 0 ? timings[k] : 0), 0);
   if (!(total > 0)) return;                 // nothing measured: keep what we have
   const measured = {};

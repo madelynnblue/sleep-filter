@@ -52,6 +52,7 @@ self.onmessage = async (e) => {
     push(analysis.chroma?.C);
     push(analysis.features?.feats);
     push(analysis.features?.logRms);
+    push(analysis.cfa);
 
     self.postMessage({ id, type: 'done', analysis }, buffers);
   } catch (err) {

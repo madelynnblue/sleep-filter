@@ -17,9 +17,9 @@
 
 import {
   EpisodeAnalyzer, Library, computeChroma, computeFeatures, fingerprint,
-  MonoResampler, segmentEpisode, segment, preferredInput,
+  MonoResampler, segmentEpisode, segmentBySeries, segment, preferredInput,
 } from '../src/index.mjs';
-import { NFEAT } from '../src/features.mjs';
+import { NFEAT, computeCFA, CFA_SAMPLE_RATE } from '../src/features.mjs';
 
 // reference implementation (the original spike, unchanged)
 import { computeChroma as refChroma } from '../spike/chroma.mjs';
@@ -305,6 +305,68 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   // test/integration.mjs against real episodes, which is the meaningful check.
 }
 
+/* ------------------------------------------------------- CFA + extras -- */
+//
+// CFA is the one feature that does NOT run at the pipeline's 8 kHz: it is
+// measured at 11.025 kHz because porting it down was measured worse against the
+// hand-judged rows (see computeCFA).
+//
+// These are structural checks. They deliberately do NOT assert that CFA scores
+// a synthetic tone above synthetic speech: it does not, and neither did the
+// surveyed implementation. A strong isolated tone leaves 90% of the spectrum
+// "above its local mean" (the far-field sidelobes sit above a 21-bin local mean),
+// so the activation becomes one broad plateau with no peaks in it. The feature
+// works on real material, where the spectrum is dense with simultaneous
+// partials — and that is where it was validated: on the three survey episodes
+// this implementation differs from the surveyed column on 136 of 62,179 frames
+// (spread over two episodes, none on the third) and changes not one detection,
+// so the OR built on it keeps the surveyed 20 hits / 0 false alarms. The
+// real-corpus checks live in the integration test.
+console.log('\nCFA and the extra detectors:');
+{
+  const out = computeCFA(musicSignal(4 * CFA_SAMPLE_RATE, CFA_SAMPLE_RATE),
+    { sampleRate: CFA_SAMPLE_RATE, nFrames: 137, frameRate: 15.625 });
+  ok(`CFA returns one score per requested frame (${out.length})`, out.length === 137);
+  ok('CFA rejects a missing sampleRate',
+     (() => { try { computeCFA(new Float32Array(4096), { nFrames: 10, frameRate: 15 }); return false; } catch { return true; } })());
+  ok('CFA on too-short audio yields zeros rather than throwing',
+     computeCFA(new Float32Array(100), { sampleRate: CFA_SAMPLE_RATE, nFrames: 5, frameRate: 15.625 })
+       .every((v) => v === 0));
+  // digital silence must not produce a division or a NaN through log10(0)
+  ok('CFA on digital silence is all zeros',
+     computeCFA(new Float32Array(4 * CFA_SAMPLE_RATE),
+       { sampleRate: CFA_SAMPLE_RATE, nFrames: 30, frameRate: 15.625 }).every((v) => v === 0));
+
+  // segmentBySeries is the shape both extra detectors use: one series,
+  // thresholded at the midpoint between its exemplar and non-exemplar means.
+  const FPS = 8000 / 512;
+  const SECONDS = 60;
+  const nFrames = Math.round(SECONDS * FPS);
+  const feats = new Float32Array(nFrames * NFEAT);
+  const series = new Float32Array(nFrames);
+  for (let t = 0; t < nFrames; t++) {
+    const sec = t / FPS;
+    const on = (sec >= 10 && sec < 20) || (sec >= 40 && sec < 50);
+    for (let f = 0; f < NFEAT; f++) feats[t * NFEAT + f] = -40;
+    series[t] = on ? 0.9 : 0.1;
+  }
+  const episode = { id: 'synthetic', features: { feats, nFrames, frameRate: FPS, duration: SECONDS } };
+  const segs = segmentBySeries(episode, [[10, 20]], series, { levelSlack: 0, minPeak: -1e9 });
+  const covers = (a) => segs.some((x) => x.start <= a && a < x.end);
+  ok(`segmentBySeries finds the exemplar and the matching region it never saw (${segs.length})`,
+     covers(15) && covers(45));
+  ok('segmentBySeries does not fire outside them', !covers(30));
+  ok('a mismatched series length is rejected, not silently misaligned',
+     (() => { try { segmentBySeries(episode, [[10, 20]], new Float32Array(10)); return false; } catch { return true; } })());
+  const flipped = segmentBySeries(episode, [[10, 20]], series, { levelSlack: 0, minPeak: -1e9, direction: -1 });
+  // tolerance: bounds land on frame quanta, so a segment ending at 10 s can
+  // report 10.048 s without covering any music
+  const overlapWith = (ranges) => flipped.reduce((sum, x) => sum +
+    ranges.reduce((a, [lo, hi]) => a + Math.max(0, Math.min(x.end, hi) - Math.max(x.start, lo)), 0), 0);
+  ok(`direction -1 inverts the detector (${flipped.length} segment(s), ${overlapWith([[10, 20], [40, 50]]).toFixed(2)}s on the music)`,
+     flipped.length > 0 && overlapWith([[10, 20], [40, 50]]) < 0.2);
+}
+
 /* ------------------------------------------- level gate (synthetic) -- */
 //
 // The general-music stage's false positives are quiet: room tone, or a scene
@@ -426,8 +488,12 @@ console.log('\nlibrary end-to-end (synthetic, music planted at different offsets
   });
   a.expectedFrames = x.length;
 
+  // The property is that decode reports a PARTIAL figure, leaving room for the
+  // stages that have not run yet. The exact share moves whenever the stage
+  // profile is re-measured (it is 56% here since CFA's 11 kHz pass joined the
+  // profile and pushed the others down), so the bound is deliberately loose.
   ok(`decode alone reports partial progress (${(a.progress * 100).toFixed(0)}%)`,
-     a.progress > 0.1 && a.progress < 0.5);
+     a.progress > 0.1 && a.progress < 0.8);
 
   const seen = [];
   a.finish({ onProgress: (p) => seen.push(p) });

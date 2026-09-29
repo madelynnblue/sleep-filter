@@ -42,7 +42,8 @@ which stays a dumb container/codec layer.
 ### 2. Phase 1 — what one episode becomes
 
 Three passes over that mono buffer, each producing something small and
-structured-cloneable:
+structured-cloneable — plus a fourth at 11 kHz when CFA is enabled (see
+[CFA does not move to 8 kHz](#cfa-does-not-move-to-8-khz)):
 
 - **Chroma** — 12 pitch classes per frame at ~15.6 fps. Each frame is *centred*
   (the time-mean subtracted) and L2-normalised. Centring is not optional: without
@@ -51,7 +52,8 @@ structured-cloneable:
 - **Landmarks** — Shazam-style spectral peak pairs, hashed as
   `(freq₁, freq₂, Δt)`. This is what finds audio that repeats.
 - **Features** — six numbers per frame: level, bass ratio, spectral flatness,
-  spectral flux, 4 Hz modulation energy, and chroma self-similarity.
+  spectral flux, 4 Hz modulation energy, and chroma self-similarity. CFA adds one
+  more series, on its own 11 kHz stream.
 
 Together these are ~1 MB per episode. The 42 MB of PCM is released.
 
@@ -133,6 +135,73 @@ Hence three guards on top of the score:
   mastered files. This is also what the goal implies: *music under dialogue is
   fine to keep*, and that is the quiet case.
 - **A ceiling** — one cue cannot exceed a quarter of the episode.
+
+#### Two more detectors, unioned in
+
+The exemplar detector asks one question — *does this look like the title theme?* —
+and that is also its weakness: it cannot see music that does not resemble the
+theme, so cues, interludes and songs go past. Two single-feature detectors are
+therefore unioned into its output. Each is calibrated the same way (no absolute
+threshold): the decision point is the midpoint between the series' mean over the
+music exemplars and its mean over everything else in the episode.
+
+- **`chromaSelf`** — chroma self-similarity: harmony that holds still and repeats.
+- **CFA** — Continuous Frequency Activation, after the DAFx-07 paper: a sustained
+  narrow-band tone, which speech (sweeping formants) and noise do not produce.
+  It is level-invariant, which matters because the level gate deliberately keeps
+  quiet music-like clusters.
+
+Measured against 56 rows across three episodes that were judged by ear, over the
+134 rows any of twelve techniques fired on:
+
+| rule | rows hit | false alarms | precision | recall | F1 |
+|---|---|---|---|---|---|
+| exemplar only | 11 | 0 | 100% | 37% | 0.54 |
+| + `chromaSelf` | 16 | 0 | 100% | 53% | 0.70 |
+| + CFA | 16 | 0 | 100% | 53% | 0.70 |
+| **+ both** | **20** | **0** | **100%** | **67%** | **0.80** |
+
+They are close to disjoint, which is why both are here: each adds four rows the
+other does not, and they share one. Neither ever fired on a row judged *not*
+music, alone or together.
+
+**No widening.** An extra is dropped when it overlaps something already kept, so
+the extras only fill gaps. Their bounds are wider than the exemplar's on rows
+both agree about, and one verdict per row does not certify that the extra seconds
+are music — 53% of the union's added seconds would have been that kind of
+widening. Filling only the gaps keeps every second attributable to a segment some
+detector found on its own.
+
+**This roughly doubles the audio that gets cut**, and that is the honest cost:
+1417 s → 3289 s over 18 episodes (2.32×), median per episode 2.24×, worst cases
+S02E04 6.8× and S02E09 6.1×. The precision figure above does not cover it — those
+verdicts are on rows some technique flagged, while the extra seconds here are
+mostly on rows nobody has judged. `musicRangesFor(..., { extraDetectors: false })`
+turns the union off and reproduces the exemplar-only result exactly.
+
+#### CFA does not move to 8 kHz
+
+CFA is the one feature that does not run at the pipeline's 8 kHz. Porting it down
+was tried and rejected on measurement, because the two rates change two things at
+once: 21 bins is a 226 Hz emphasis window at 11 kHz but 164 Hz at 8 kHz, and 100
+frames is 2.3 s but 3.2 s. All four 8 kHz variants are worse in the union, and
+the Hz-matched one is *better* standalone yet still worse, so this is not a
+tuning problem:
+
+| CFA configuration | CFA alone | + `chromaSelf` + CFA |
+|---|---|---|
+| **11.025 kHz, 21 bins, 100 frames** | **13 hit / 0 FA** | **20 hit / 0 FA, F1 0.80** |
+| 8 kHz, 21 bins, 100 frames | 11 / 0 | 18 / 0, F1 0.75 |
+| 8 kHz, 21 bins, 72 frames | 11 / 0 | 17 / 0, F1 0.72 |
+| 8 kHz, 29 bins (Hz-matched), 100 frames | 14 / 0 | 18 / 0, F1 0.75 |
+| 8 kHz, 29 bins, 72 frames | 12 / 0 | 18 / 0, F1 0.75 |
+
+The same three music rows are missed by every 8 kHz variant. So `EpisodeAnalyzer`
+resamples a second stream at 11.025 kHz when `cfa: true`, which costs a second
+`MonoResampler` during decode and a second STFT pass in `finish()` — measured at
+**~1.4× the features pass** (decode 2.3 s, features 1.3 s, cfa 1.9 s,
+fingerprints 0.5 s on a 22-minute episode), so the progress meter weights it
+accordingly.
 
 ### The one knob
 
@@ -237,12 +306,13 @@ Measured on a 19-episode corpus, and asserted by the test suite:
 |---|---|
 | theme discovered | **18 of 19** episodes |
 | cut positions vs independent ground truth | **mean 0.81 s, max 0.83 s** |
-| general-music stage | segments in **18 of 18** episodes |
+| general-music stage | segments in **18 of 18** episodes; union adds 246 segments, 1417 s → 3289 s |
 | level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
-| time per 22-minute episode | ~3.5 s under Node (decode 49%, features 37%, fingerprints 14%) |
+| time per 22-minute episode | ~6.1 s under Node (decode 38%, features 22%, cfa 32%, fingerprints 8%) |
 
 **The browser splits that time completely differently.** Measured on the same
-kind of episode through WebCodecs: **decode 88%**, features 9%, fingerprints 3%.
+kind of episode through WebCodecs: **decode 78%**, features 8%, cfa 11%,
+fingerprints 3%.
 Decoding dominates in a page in a way it never does through ffmpeg, which is why
 the progress meter learns each backend's split at runtime and remembers it — the
 figures above would put the bar at 27% when half the wall clock had passed.
