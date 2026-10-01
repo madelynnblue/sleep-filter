@@ -89,6 +89,10 @@ fieldset.features .opt label { display:inline; padding:0; cursor:default; }
 #music .segno { font-variant-numeric:tabular-nums; }
 #music .pick { width:2rem; }
 #music .dim { opacity:.65; }
+/* A segment the dialog detector fired on. It is deliberately not alarming: the
+   segment stays tickable, this only says why it starts unticked. */
+#music .speech { font-size:.75rem; padding:.05rem .35rem; border-radius:.6rem;
+  background:#3a2f18; color:#e8c98a; border:1px solid #5a4a24; cursor:help; }
 button.twisty { background:none; border:0; color:var(--dim); cursor:pointer; padding:0 .45rem 0 0;
   font:inherit; font-weight:400; }
 button.twisty:hover:not(:disabled) { color:var(--accent); }

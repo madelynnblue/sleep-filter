@@ -41,8 +41,8 @@ which stays a dumb container/codec layer.
 
 ### 2. Phase 1 — what one episode becomes
 
-Three passes over that mono buffer, each producing something small and
-structured-cloneable — plus a fourth at 11 kHz when CFA is enabled (see
+Four passes over that mono buffer, each producing something small and
+structured-cloneable — plus a fifth at 11 kHz for CFA (see
 [CFA does not move to 8 kHz](#cfa-does-not-move-to-8-khz)):
 
 - **Chroma** — 12 pitch classes per frame at ~15.6 fps. Each frame is *centred*
@@ -54,6 +54,9 @@ structured-cloneable — plus a fourth at 11 kHz when CFA is enabled (see
 - **Features** — six numbers per frame: level, bass ratio, spectral flatness,
   spectral flux, 4 Hz modulation energy, and chroma self-similarity. CFA adds one
   more series, on its own 11 kHz stream.
+- **Dialog** — three more series aimed at speech over music (see
+  [Dialog over music](#dialog-over-music)). It runs last because it needs the
+  feature frame grid.
 
 Together these are ~1 MB per episode. The 42 MB of PCM is released.
 
@@ -203,6 +206,67 @@ resamples a second stream at 11.025 kHz when `cfa: true`, which costs a second
 fingerprints 0.5 s on a 22-minute episode), so the progress meter weights it
 accordingly.
 
+#### Dialog over music
+
+Removing a stretch of music that has speech over it removes the speech too. This
+stage marks those stretches so they default to being left alone.
+
+It is **not** a speech-or-music classifier. Both are present at once, so the
+question is whether speech is audible *inside* a music bed. The cue comes from
+Karnebäck's low-frequency-modulation work: the useful information is not how much
+low-frequency modulation there is — music has plenty, that is the beat — but how
+it is distributed **across bands**. In music one source modulates every band
+together; in speech each band moves on its own.
+
+Measured against **109 hand-judged 6 s windows across 7 episodes** (58 of them
+with dialog under music), scored by AUC so no threshold choice is baked in:
+
+| detector | AUC |
+|---|---|
+| 4 Hz modulation (the existing production feature) | 0.783 |
+| 4 Hz modulation in 300–3400 Hz | 0.757 |
+| periodicity (80–300 Hz voicing) | 0.721 |
+| LF modulation std in 400–1700 Hz | 0.668 |
+| **level alone (control)** | **0.398** |
+| band synchrony | 0.600 |
+| **the shipped combination** (`mod4` + speech-band + synchrony) | **0.835** |
+
+The level control matters: dialogue-under-music is *not* simply louder, so none
+of this is loudness in disguise. And `band synchrony` is the clearest evidence
+for Karnebäck's actual claim — alone it is weak (0.600, and below chance on two
+episodes), yet it is in every winning combination, because it measures a
+*different* kind of thing from the modulation magnitudes.
+
+The three series are combined with **fixed corpus-wide constants, not per-episode
+ones**. Per-episode standardisation was tried and is worse (AUC 0.800) — and worse
+in a way that matters: it centres every episode on its own mean, so a threshold
+can no longer mean "there is no dialog here", and every episode would flag its own
+top fraction regardless of content.
+
+The threshold is a precision/recall choice, and the honest numbers are worse than
+an earlier 3-episode sample suggested (which put precision at 1.00 for the 30%
+budget):
+
+| threshold | music flagged | precision | recall |
+|---|---|---|---|
+| 0.0 | 49% | 0.77 | 0.71 |
+| **0.3 (default)** | **28%** | **0.84** | **0.45** |
+| 0.5 | 18% | 0.90 | 0.31 |
+| 1.0 | 3% | 1.00 | 0.05 |
+
+Precision never exceeds ~0.90 anywhere on the curve, so "no false alarms" is not
+available. On the real corpus the default flags 27% of proposed music seconds
+(113 of 392 segments), against 28% on the survey windows — the same behaviour on
+material neither the threshold nor the constants were fitted to.
+
+Flagged segments **start unticked but remain tickable**. That is the whole
+behaviour change: a false positive means a stretch of music stays in, a false
+negative means speech gets cut, and at 0.84 precision the user has to be able to
+overrule it. Two caveats worth carrying: Karnebäck documents that **sung vocals
+are confused with speech**, so a vocal cue may read as dialog; and the combination
+is fit on one show, so the fixed constants would want re-deriving before this is
+trusted on different material.
+
 ### The one knob
 
 There is one user-facing setting for this stage, from *cut more* to *cut less*.
@@ -307,12 +371,13 @@ Measured on a 19-episode corpus, and asserted by the test suite:
 | theme discovered | **18 of 19** episodes |
 | cut positions vs independent ground truth | **mean 0.81 s, max 0.83 s** |
 | general-music stage | segments in **18 of 18** episodes; union adds 246 segments, 1417 s → 3289 s |
+| dialog-over-music | flags **27% of proposed music seconds**; 113 of 392 segments |
 | level gate (hand-labelled) | **5 of 6** false positives removed, **5 of 5** confirmed cues kept |
-| time per 22-minute episode | ~6.1 s under Node (decode 38%, features 22%, cfa 32%, fingerprints 8%) |
+| time per 22-minute episode | ~7.4 s under Node (decode 31%, features 19%, cfa 26%, dialog 17%, fingerprints 7%) |
 
 **The browser splits that time completely differently.** Measured on the same
-kind of episode through WebCodecs: **decode 78%**, features 8%, cfa 11%,
-fingerprints 3%.
+kind of episode through WebCodecs: **decode 73%**, features 8%, cfa 10%,
+dialog 7%, fingerprints 2%.
 Decoding dominates in a page in a way it never does through ffmpeg, which is why
 the progress meter learns each backend's split at runtime and remembers it — the
 figures above would put the bar at 27% when half the wall clock had passed.

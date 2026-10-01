@@ -38,8 +38,8 @@ const $ = (id) => document.getElementById(id);
  * proportionally against the measured decode share.
  */
 const COLD_SHARES = {
-  webcodecs: { decode: 0.782, chroma: 0, features: 0.080, fingerprints: 0.026, cfa: 0.112 },
-  pcm: { decode: 0.026, chroma: 0, features: 0.348, fingerprints: 0.138, cfa: 0.488 },
+  webcodecs: { decode: 0.729, chroma: 0, features: 0.075, fingerprints: 0.024, cfa: 0.104, dialog: 0.068 },
+  pcm: { decode: 0.020, chroma: 0, features: 0.265, fingerprints: 0.105, cfa: 0.372, dialog: 0.238 },
 };
 
 /** Which decoder a file will take, from its extension. Mirrors audio-decode. */
@@ -313,7 +313,7 @@ function setStatus(text, isError = false) {
  */
 function learnShares(timings, backend) {
   if (!timings) return;
-  const stages = ['decode', 'chroma', 'fingerprints', 'features', 'cfa'];
+  const stages = ['decode', 'chroma', 'fingerprints', 'features', 'cfa', 'dialog'];
   const total = stages.reduce((s, k) => s + (timings[k] > 0 ? timings[k] : 0), 0);
   if (!(total > 0)) return;                 // nothing measured: keep what we have
   const measured = {};
@@ -901,7 +901,10 @@ function computeMusic() {
   }).map((r) => ({
     id: r.id,
     segments: r.segments,
-    enabled: new Set(r.segments.map((_, i) => i)),
+    // Music the dialog detector fired on starts UNTICKED: cutting it would take
+    // the speech with it. It is only a default — the detector's precision is
+    // 0.84 at its operating point, so the row stays tickable.
+    enabled: new Set(r.segments.map((_, i) => i).filter((i) => !r.segments[i].hasDialog)),
     error: r.error,
     separation: r.separation,
   }));
@@ -946,13 +949,18 @@ function renderMusic() {
   }
   const ex = calibrationExemplars();
   const picked = [...state.selected].length > 0;
+  const protectedSegs = state.music.reduce((n, ep) => n + ep.segments.filter((s) => s.hasDialog).length, 0);
+  const protectedSuffix = protectedSegs
+    ? ` ${protectedSegs} segment${protectedSegs > 1 ? 's' : ''} with dialog under them are left in by default.`
+    : '';
   if (state.musicSeed === 'foreground') {
-    note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.';
+    note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.' + protectedSuffix;
   } else {
     note.textContent = ex.length
       ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
         'Untick what should stay.'
       : 'No music example to calibrate on.';
+    note.textContent += protectedSuffix;
   }
 
   if (!state.music.length) { stopPlayersIn(el); el.innerHTML = ''; return; }
@@ -983,7 +991,12 @@ function renderMusic() {
         `title="segment ${i + 1} of ${total} in ${ep.id}">#${i + 1}</span> ` +
         `${playButton(`music:${ep.id}:${i}`, 'Play this segment')}` +
         ` ${fmtTime(s.start)} – ${fmtTime(s.end)}` +
-        ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span></td></tr>`;
+        ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span>` +
+        (s.hasDialog
+          ? ` <span class="speech" title="Dialog detected over this music (score ${s.score.toFixed(2)}). ` +
+            `Left in by default so the speech is not cut with the music — tick it to remove it anyway.">speech</span>`
+          : '') +
+        `</td></tr>`;
     });
   }
 

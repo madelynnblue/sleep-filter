@@ -53,6 +53,10 @@ self.onmessage = async (e) => {
     push(analysis.features?.feats);
     push(analysis.features?.logRms);
     push(analysis.cfa);
+    push(analysis.dialog?.mod4);
+    push(analysis.dialog?.modSpeech);
+    push(analysis.dialog?.bandSync);
+    push(analysis.dialog?.periodicity);
 
     self.postMessage({ id, type: 'done', analysis }, buffers);
   } catch (err) {

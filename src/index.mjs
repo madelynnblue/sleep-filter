@@ -25,6 +25,10 @@ export {
   MonoResampler, describeChunk, downmixInto, toMonoAt, DEFAULT_SAMPLE_RATE,
 } from './audio.mjs';
 export { makeFFT, fftInPlace, fft } from './fft.mjs';
+export {
+  computeDialog, segmentHasDialog, dialogWindowScore,
+  DIALOG_THRESHOLD, DIALOG_WINDOW, DIALOG_SERIES,
+} from './dialog.mjs';
 export { computeChroma, profile, smooth, frameSim } from './chroma.mjs';
 export { fingerprint, discover, formatTime } from './discovery.mjs';
 export {

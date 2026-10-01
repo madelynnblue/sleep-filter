@@ -20,7 +20,11 @@
 import { MonoResampler, DEFAULT_SAMPLE_RATE, toMonoAt } from './audio.mjs';
 import { computeChroma } from './chroma.mjs';
 import { fingerprint } from './discovery.mjs';
-import { computeFeatures, computeCFA, CFA_SAMPLE_RATE, calibrate, scoreFrames, segment, NFEAT } from './features.mjs';
+import { computeFeatures, computeCFA, CFA_SAMPLE_RATE, calibrate, scoreFrames, segment, NFEAT, FEATURE_NAMES } from './features.mjs';
+import { computeDialog } from './dialog.mjs';
+
+/** Column index of the 4 Hz modulation feature, reused by the dialog stage. */
+const MOD4_COL = FEATURE_NAMES.indexOf('mod4');
 
 const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
 
@@ -34,6 +38,9 @@ const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
  * for a chroma pass of its own that finish() had already run. That duplicate is
  * gone, and these numbers are what the app actually spends.
  *
+ * `dialog` is the newest stage, measured the same way (1.27s against features'
+ * 1.4s), and it is the last to run because it needs the feature frame grid.
+ *
  * `cfa` is a late addition, weighted from a direct per-episode measurement on
  * 22-minute episodes: decode 2.3s, features 1.3s, cfa 1.9s, fingerprints 0.5s.
  * It runs at 11.025 kHz on its own resample stream and so costs ~1.4x the
@@ -46,7 +53,7 @@ const CHUNK_GROW = 1 << 18;   // 256k samples (~32s at 8 kHz) per growth step
  * so this is approximate by design; the property that matters is that the meter
  * keeps moving at a roughly even rate.
  */
-const STAGE_SHARE = { decode: 0.383, chroma: 0, features: 0.219, fingerprints: 0.080, cfa: 0.318 };
+const STAGE_SHARE = { decode: 0.312, chroma: 0, features: 0.190, fingerprints: 0.068, cfa: 0.258, dialog: 0.172 };
 
 /**
  * Profile for the un-fused path, used only when just one of chroma/segments is
@@ -54,7 +61,7 @@ const STAGE_SHARE = { decode: 0.383, chroma: 0, features: 0.219, fingerprints: 0
  * whole STFT pass — so its split is genuinely different and cannot be derived
  * from this one.
  */
-const STAGE_SHARE_SPLIT = { decode: 0.284, chroma: 0.126, features: 0.208, fingerprints: 0.090, cfa: 0.291 };
+const STAGE_SHARE_SPLIT = { decode: 0.243, chroma: 0.108, features: 0.178, fingerprints: 0.077, cfa: 0.248, dialog: 0.147 };
 
 /**
  * Weights for the stages that will actually run, summing to 1.
@@ -63,15 +70,16 @@ const STAGE_SHARE_SPLIT = { decode: 0.284, chroma: 0.126, features: 0.208, finge
  * both — chroma's share belongs to features there, or the meter tops out short
  * of the end.
  */
-function normaliseShares(shares, { chroma, features, fingerprints, cfa = false, foldChromaIntoFeatures = false }) {
+function normaliseShares(shares, { chroma, features, fingerprints, cfa = false, dialog = false, foldChromaIntoFeatures = false }) {
   const w = { decode: shares.decode ?? 0 };
   w.chroma = chroma ? (shares.chroma ?? 0) : 0;
   w.features = (features ? (shares.features ?? 0) : 0) +
                (foldChromaIntoFeatures ? (shares.chroma ?? 0) : 0);
   w.fingerprints = fingerprints ? (shares.fingerprints ?? 0) : 0;
   w.cfa = cfa ? (shares.cfa ?? 0) : 0;
-  const total = w.decode + w.chroma + w.features + w.fingerprints + w.cfa;
-  if (!(total > 0)) return { decode: 1, chroma: 0, features: 0, fingerprints: 0, cfa: 0 };
+  w.dialog = dialog ? (shares.dialog ?? 0) : 0;
+  const total = w.decode + w.chroma + w.features + w.fingerprints + w.cfa + w.dialog;
+  if (!(total > 0)) return { decode: 1, chroma: 0, features: 0, fingerprints: 0, cfa: 0, dialog: 0 };
   for (const k of Object.keys(w)) w[k] /= total;
   return w;
 }
@@ -141,6 +149,8 @@ export class EpisodeAnalyzer {
    * @param {boolean} [opts.cfa=false]  also run the Continuous Frequency
    *        Activation pass. It needs 11.025 kHz, so it resamples a second stream
    *        alongside the feature one and costs ~1.4x `features`.
+   * @param {boolean} [opts.dialog=false]  also run the dialog-over-music pass at
+   *        8 kHz. Needs the feature frame grid, so it runs last.
    */
   constructor(opts = {}) {
     this.id = opts.id ?? 'episode-1';
@@ -148,9 +158,13 @@ export class EpisodeAnalyzer {
     this.inputSampleRate = opts.inputSampleRate ?? null;
     this.inputChannels = opts.inputChannels ?? null;
     this.analyzeCFA = opts.cfa === true;
+    this.analyzeDialog = opts.dialog === true;
     this._customShares = opts.shares ?? null;
     this.shares = this._customShares ?? STAGE_SHARE;
-    this._w = normaliseShares(this.shares, { chroma: true, features: true, fingerprints: true, cfa: this.analyzeCFA });
+    this._w = normaliseShares(this.shares, {
+      chroma: true, features: true, fingerprints: true,
+      cfa: this.analyzeCFA, dialog: this.analyzeDialog,
+    });
     this.timings = {};             // ms spent per stage, filled in as they run
     this._resampler = null;
     this._cfaResampler = null;
@@ -160,7 +174,7 @@ export class EpisodeAnalyzer {
     this._receivedFrames = 0;
     this._decodeDone = false;
     // fraction done within each finish() stage, folded into `progress`
-    this._stage = { chroma: 0, fingerprints: 0, features: 0, cfa: 0 };
+    this._stage = { chroma: 0, fingerprints: 0, features: 0, cfa: 0, dialog: 0 };
   }
 
   /** Feed one AudioChunk (see audio.mjs for the shape). Returns samples added. */
@@ -246,6 +260,7 @@ export class EpisodeAnalyzer {
       (w.chroma ?? 0) * this._stage.chroma +
       (w.features ?? 0) * this._stage.features +
       (w.cfa ?? 0) * this._stage.cfa +
+      (w.dialog ?? 0) * this._stage.dialog +
       (w.fingerprints ?? 0) * this._stage.fingerprints);
   }
   set expectedFrames(n) { this._expectedFrames = n; }
@@ -268,6 +283,7 @@ export class EpisodeAnalyzer {
         chroma: chroma && !segments, features: segments, fingerprints,
         // CFA consumes the feature frame grid, so it only exists alongside it
         cfa: this.analyzeCFA && segments,
+        dialog: this.analyzeDialog && segments,
         foldChromaIntoFeatures: chroma && segments,
       });
     const samples = this._samples.view();
@@ -318,6 +334,18 @@ export class EpisodeAnalyzer {
       out.cfa = run('cfa', (p) => computeCFA(this._cfaSamples.view(), {
         sampleRate: CFA_SAMPLE_RATE, nFrames, frameRate, onProgress: p,
       }));
+    }
+    // Last, because it is the only stage that needs the feature frame grid.
+    if (this.analyzeDialog && segments && out.features) {
+      const { nFrames, frameRate } = out.features;
+      out.dialog = run('dialog', (p) => computeDialog(samples, {
+        sampleRate, nFrames, frameRate, onProgress: p,
+      }));
+      // The dialog combination also uses the production 4 Hz feature, which is
+      // already computed and was the single strongest member when measured.
+      const mod4 = new Float32Array(nFrames);
+      for (let t = 0; t < nFrames; t++) mod4[t] = out.features.feats[t * NFEAT + MOD4_COL];
+      out.dialog.mod4 = mod4;
     }
     return out;
   }

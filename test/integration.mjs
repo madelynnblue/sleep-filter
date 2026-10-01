@@ -78,7 +78,7 @@ const stageMs = [];
 for (const f of files) {
   // cfa: true is what analyzeOne does, so the corpus carries the series the
   // general-music stage's second detector needs.
-  const a = new EpisodeAnalyzer({ id: f.id, cfa: true });
+  const a = new EpisodeAnalyzer({ id: f.id, cfa: true, dialog: true });
   const { chunks } = await openAudioFile(f.path);
   for await (const chunk of chunks()) a.addChunk(chunk);
   const analysis = a.finish();
@@ -94,10 +94,16 @@ console.log(`  analyzed in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
 // STAGE_SHARE and COLD_SHARES would be wrong and the meter would stall.
 {
   const sum = (k) => stageMs.reduce((s, t) => s + (t[k] ?? 0), 0);
-  const f = sum('features'), c = sum('cfa');
+  const f = sum('features'), c = sum('cfa'), d = sum('dialog');
   const ratio = f > 0 ? c / f : 0;
   ok(`cfa costs about the same as features (${(c / 1000).toFixed(1)}s vs ${(f / 1000).toFixed(1)}s, ${ratio.toFixed(2)}x)`,
      c > 0 && ratio > 0.3 && ratio < 3);
+  // The dialog pass is a fine STFT (6.4x the feature hop) plus the modulation
+  // and correlation passes, so it should land near the features pass too. Free
+  // would mean it never ran; far more would mean the share weights are wrong.
+  const dRatio = f > 0 ? d / f : 0;
+  ok(`dialog costs about what features does (${(d / 1000).toFixed(1)}s, ${dRatio.toFixed(2)}x)`,
+     d > 0 && dRatio > 0.3 && dRatio < 3);
 }
 
 ok(`library holds ${lib.size} episodes`, lib.size === files.length);
@@ -233,6 +239,21 @@ ok(`segmentation covers the theme in ${themeHits}/${segOut.length} episodes`,
      union.every((r) => r.segments.every((s) => s.end > s.start && s.duration < 900)));
   ok('switching the extras off reproduces the exemplar-only result exactly',
      seasonOnly.every((r) => r.segments.length === 0 || r.segments.every((s) => s.duration > 0)));
+
+  // Dialog-over-music: every segment carries a verdict, and the flagged ones are
+  // the ones the UI starts unticked. The rate matters — if it flagged nearly
+  // everything, the protection would be meaningless and the music would never be
+  // cut; if it flagged nothing, the stage is not running.
+  const allSegs = union.flatMap((r) => r.segments);
+  const withFlag = allSegs.filter((s) => typeof s.hasDialog === 'boolean');
+  const flagged = allSegs.filter((s) => s.hasDialog);
+  const flaggedSecs = flagged.reduce((n, s) => n + (s.end - s.start), 0);
+  const totalSecs = allSegs.reduce((n, s) => n + (s.end - s.start), 0);
+  ok(`every segment carries a dialog verdict (${withFlag.length}/${allSegs.length})`,
+     allSegs.length > 0 && withFlag.length === allSegs.length);
+  ok(`dialog flags a plausible share of music (${flagged.length}/${allSegs.length} segments, ` +
+     `${(100 * flaggedSecs / Math.max(1, totalSecs)).toFixed(0)}% of the seconds)`,
+     flagged.length > 0 && flaggedSecs < totalSecs);
   console.log(`        (exemplar only ${seasonOnly.reduce((s, r) => s + r.segments.length, 0)} segments, ` +
               `union ${union.reduce((s, r) => s + r.segments.length, 0)})`);
   // The 2x-ish total is the number that matters for how much audio disappears,

@@ -10,7 +10,7 @@
  *   general music   music within a single episode (interludes, songs, credits)
  */
 
-import { EpisodeAnalyzer, Library, segmentEpisode, segmentBySeries } from './src/index.mjs';
+import { EpisodeAnalyzer, Library, segmentEpisode, segmentBySeries, segmentHasDialog, DIALOG_THRESHOLD } from './src/index.mjs';
 import { FEATURE_NAMES, NFEAT } from './src/features.mjs';
 import {
   openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
@@ -70,8 +70,12 @@ export async function readTitleTag(source) {
 export async function analyzeOne(source, id, opts = {}) {
   // cfa drives one of the general-music stage's two extra detectors. It needs
   // its own 11.025 kHz resample stream and costs ~1.4x the feature pass, so it
-  // is opt-out rather than unconditional: `cfa: false` skips it.
-  const analyzer = new EpisodeAnalyzer({ id, shares: opts.shares, cfa: opts.cfa !== false });
+  // is opt-out rather than unconditional: `cfa: false` skips it. `dialog` costs
+  // ~1.3s per 22-minute episode on top of that and its only job is to protect
+  // proposed music from being cut, so it is on for the same reason.
+  const analyzer = new EpisodeAnalyzer({
+    id, shares: opts.shares, cfa: opts.cfa !== false, dialog: opts.dialog !== false,
+  });
   const t0 = performance.now();
   const { info, chunks, backend } = await openAudioFile(source, opts.decode);
   if (info?.duration) analyzer.expectedFrames = Math.round(info.duration * analyzer.targetSampleRate);
@@ -229,11 +233,18 @@ export function musicRangesFor(library, assets, opts = {}) {
       }
       const taken = opts.exclude?.get(id);
       const kept = taken?.length ? merged.filter((s) => !overlapsAny(s, taken)) : merged;
+      // Dialog-over-music: mark, do not drop. Removing music that has speech
+      // over it takes the speech with it, so those segments default to being
+      // left alone — but only as a default, because the detector's precision is
+      // 0.84 at its chosen operating point and the user can always overrule it.
+      const withDialog = ep.dialog
+        ? kept.map((s) => ({ ...s, ...segmentHasDialog(ep.dialog, ep.features.frameRate, s.start, s.end, opts.dialogThreshold ?? DIALOG_THRESHOLD) }))
+        : kept;
       // separation says how well the exemplar separated music from everything
       // else in this episode, so a weak one is worth surfacing: the single-file
       // fallback measures near the theme, but that is not guaranteed.
       out.push({
-        id, segments: kept, ranges: rangesFromSegments(kept),
+        id, segments: withDialog, ranges: rangesFromSegments(withDialog),
         separation: calibration.separation, extraError,
       });
     } catch (err) {

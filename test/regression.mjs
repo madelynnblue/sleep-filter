@@ -20,6 +20,7 @@ import {
   MonoResampler, segmentEpisode, segmentBySeries, segment, preferredInput,
 } from '../src/index.mjs';
 import { NFEAT, computeCFA, CFA_SAMPLE_RATE } from '../src/features.mjs';
+import { computeDialog, dialogWindowScore, segmentHasDialog, DIALOG_THRESHOLD } from '../src/dialog.mjs';
 
 // reference implementation (the original spike, unchanged)
 import { computeChroma as refChroma } from '../spike/chroma.mjs';
@@ -365,6 +366,80 @@ console.log('\nCFA and the extra detectors:');
     ranges.reduce((a, [lo, hi]) => a + Math.max(0, Math.min(x.end, hi) - Math.max(x.start, lo)), 0), 0);
   ok(`direction -1 inverts the detector (${flipped.length} segment(s), ${overlapWith([[10, 20], [40, 50]]).toFixed(2)}s on the music)`,
      flipped.length > 0 && overlapWith([[10, 20], [40, 50]]) < 0.2);
+}
+
+/* ------------------------------------------------- dialog over music -- */
+//
+// The dialog detector's job is narrower than "speech or music": it has to find
+// speech while music is playing. Calibration and thresholds were measured against
+// hand-judged windows, so these are structural checks plus one synthetic
+// property — that the combination responds to the cue it is built on.
+//
+// The cue is cross-band modulation STRUCTURE, not modulation amount: in music
+// one source modulates every band together, in speech each band moves on its own.
+console.log('\ndialog over music:');
+{
+  const N = 20 * RATE;
+  const opts = { sampleRate: 8000, nFrames: 320, frameRate: 15.625 };
+
+  // A steady chord: every band shares the same 4 Hz modulation envelope.
+  const synced = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const t = i / RATE;
+    const beat = 0.6 + 0.4 * Math.sin(2 * Math.PI * 4 * t);
+    synced[i] = beat * (Math.sin(2 * Math.PI * 220 * t) + 0.5 * Math.sin(2 * Math.PI * 660 * t)
+      + 0.3 * Math.sin(2 * Math.PI * 1320 * t));
+  }
+  // Speech-like: syllabic bursts whose spectral content moves independently.
+  const rnd = (() => { let s = 5; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); })();
+  const speechy = new Float32Array(N);
+  let env = 0, f1 = 500, f2 = 1500, p1 = 0, p2 = 0;
+  for (let i = 0; i < N; i++) {
+    if (rnd() < 1 / (0.18 * RATE)) { env = 0.7 + 0.3 * rnd(); f1 = 300 + 600 * rnd(); f2 = 1200 + 1500 * rnd(); }
+    env *= 0.9992;
+    p1 += (2 * Math.PI * f1) / RATE; p2 += (2 * Math.PI * f2) / RATE;
+    speechy[i] = (0.5 * Math.sin(p1) + 0.4 * Math.sin(p2) + 0.5 * Math.sin(2 * Math.PI * 3000 * i / RATE)) * Math.max(0, env);
+  }
+
+  const dSync = computeDialog(synced, opts);
+  const dSpeech = computeDialog(speechy, opts);
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  ok('computeDialog returns one value per feature frame',
+     dSync.bandSync.length === 320 && dSync.modSpeech.length === 320 && dSync.periodicity.length === 320);
+  ok('all three series are finite',
+     [dSync, dSpeech].every((d) => ['bandSync', 'modSpeech', 'periodicity']
+       .every((k) => d[k].every((v) => Number.isFinite(v)))));
+  // bandSync is 1 - mean cross-band correlation, so it is LOW when every band
+  // shares one modulation envelope (a beat) and HIGH when the bands move
+  // independently (speech). Measured 0.02 against 0.36 on these two signals.
+  const syncMeans = mean(dSync.bandSync), speechMeans = mean(dSpeech.bandSync);
+  ok(`band synchrony is low for a shared beat and high for independent bands (${syncMeans.toFixed(3)} vs ${speechMeans.toFixed(3)})`,
+     speechMeans > syncMeans);
+  ok('band synchrony stays inside [0, 1]',
+     [...dSync.bandSync, ...dSpeech.bandSync].every((v) => v >= -1e-6 && v <= 1 + 1e-6));
+
+  ok('computeDialog needs 8 kHz input',
+     (() => { try { computeDialog(synced, { sampleRate: 11025, nFrames: 10, frameRate: 15.625 }); return false; } catch { return true; } })());
+  ok('computeDialog rejects a missing nFrames',
+     (() => { try { computeDialog(synced, { sampleRate: 8000, frameRate: 15.625 }); return false; } catch { return true; } })());
+
+  // The score is a fixed-constant combination, so it must be comparable between
+  // episodes rather than re-centred per episode.
+  const silent = computeDialog(new Float32Array(N), opts);
+  const score = dialogWindowScore(silent, 15.625, 1, 6);
+  ok(`digital silence scores far below the threshold (${score.toFixed(2)} vs ${DIALOG_THRESHOLD})`,
+     score < DIALOG_THRESHOLD - 1);
+
+  // A segment is flagged when ANY 6 s window inside it clears the threshold, so
+  // the same audio flags the same way regardless of where the segment was cut.
+  const flaggedLong = segmentHasDialog(dSpeech, 15.625, 1, 18, -99);
+  const flaggedShort = segmentHasDialog(dSpeech, 15.625, 5, 11, -99);
+  ok('a permissive threshold flags both a long and a short segment',
+     flaggedLong.hasDialog && flaggedShort.hasDialog);
+  const never = segmentHasDialog(dSpeech, 15.625, 1, 18, 99);
+  ok('an impossible threshold flags neither', !never.hasDialog);
+  ok('segmentHasDialog reports the score it decided on',
+     Number.isFinite(flaggedLong.score) && flaggedLong.score >= flaggedShort.score - 1e-6);
 }
 
 /* ------------------------------------------- level gate (synthetic) -- */
