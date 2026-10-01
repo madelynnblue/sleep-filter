@@ -21,6 +21,8 @@ import {
 } from '../src/index.mjs';
 import { NFEAT, computeCFA, CFA_SAMPLE_RATE } from '../src/features.mjs';
 import { computeDialog, dialogWindowScore, segmentHasDialog, DIALOG_THRESHOLD } from '../src/dialog.mjs';
+import { undeclared } from './undefined.mjs';
+import { readdirSync } from 'node:fs';
 
 // reference implementation (the original spike, unchanged)
 import { computeChroma as refChroma } from '../spike/chroma.mjs';
@@ -681,5 +683,23 @@ console.log('\ndialog over music:');
 }
 
 console.log(`\npreferredInput: ${JSON.stringify(preferredInput)}`);
+
+/* ------------------------------------- undeclared identifiers (source) -- */
+//
+// `node --check` proves a file parses, not that its identifiers resolve. A local
+// renamed at its use site but not at its declaration parses fine and throws only
+// on the branch that reaches it — which is exactly how `protectedSuffix` got
+// past a green run, got pushed, and broke the page on the single-file path. These
+// modules have no other coverage of that kind, so check them all here.
+console.log('\nno undeclared identifiers:');
+{
+  const files = ['main.js', 'pipeline.mjs', 'worker.mjs',
+    ...readdirSync('src').filter((f) => f.endsWith('.mjs')).map((f) => `src/${f}`)];
+  const bad = [];
+  for (const f of files) for (const { name, line } of undeclared(f)) bad.push(`${f}:${line} ${name}`);
+  ok(`every module declares the identifiers it uses (${files.length} files)`,
+     bad.length === 0, bad.join(', '));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

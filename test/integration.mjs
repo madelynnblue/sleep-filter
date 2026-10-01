@@ -88,22 +88,25 @@ for (const f of files) {
 console.log(`  analyzed in ${((Date.now() - t0) / 1000).toFixed(1)}s ` +
             `(decode + phase 1 + phase 2)\n`);
 
-// The cfa stage runs a second STFT pass at 11.025 kHz, so it should cost
-// something like the features pass. If it were free the pass would not be
-// running; if it were many times the features pass, the share weights in
-// STAGE_SHARE and COLD_SHARES would be wrong and the meter would stall.
+// The cfa and dialog stages each add a pass, so it is worth knowing they ran and
+// what they cost. What is ASSERTED is that they produced series on the frame
+// grid — a wall-clock ratio is not evidence of that, and a loaded machine once
+// made the features total read 10x high and failed an assertion that had nothing
+// to do with whether either pass ran.
 {
   const sum = (k) => stageMs.reduce((s, t) => s + (t[k] ?? 0), 0);
   const f = sum('features'), c = sum('cfa'), d = sum('dialog');
-  const ratio = f > 0 ? c / f : 0;
-  ok(`cfa costs about the same as features (${(c / 1000).toFixed(1)}s vs ${(f / 1000).toFixed(1)}s, ${ratio.toFixed(2)}x)`,
-     c > 0 && ratio > 0.3 && ratio < 3);
-  // The dialog pass is a fine STFT (6.4x the feature hop) plus the modulation
-  // and correlation passes, so it should land near the features pass too. Free
-  // would mean it never ran; far more would mean the share weights are wrong.
-  const dRatio = f > 0 ? d / f : 0;
-  ok(`dialog costs about what features does (${(d / 1000).toFixed(1)}s, ${dRatio.toFixed(2)}x)`,
-     d > 0 && dRatio > 0.3 && dRatio < 3);
+  console.log(`        (features ${(f / 1000).toFixed(1)}s, cfa ${(c / 1000).toFixed(1)}s, ` +
+              `dialog ${(d / 1000).toFixed(1)}s across ${lib.size} episodes)`);
+  const shaped = lib.ids.every((id) => {
+    const ep = lib.episodes.get(id);
+    const n = ep.features?.nFrames;
+    return !!n && ep.cfa?.length === n && ep.dialog?.mod4?.length === n
+      && ep.dialog?.modSpeech?.length === n && ep.dialog?.bandSync?.length === n;
+  });
+  ok('every episode carries a CFA series and a full dialog set on the frame grid', shaped);
+  ok(`both stages reported a time (cfa ${(c / 1000).toFixed(1)}s, dialog ${(d / 1000).toFixed(1)}s)`,
+     c > 0 && d > 0);
 }
 
 ok(`library holds ${lib.size} episodes`, lib.size === files.length);

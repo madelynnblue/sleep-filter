@@ -955,7 +955,7 @@ function renderMusic() {
       `${speechSegs > 1 ? 'those' : 'that'} takes the dialogue with ${speechSegs > 1 ? 'them' : 'it'}.`
     : '';
   if (state.musicSeed === 'foreground') {
-    note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.' + protectedSuffix;
+    note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.' + speechSuffix;
   } else {
     note.textContent = ex.length
       ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +

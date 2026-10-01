@@ -393,7 +393,7 @@ npm test                      # hermetic regression + real-audio integration
 cd audio-decode && npm test   # demux / decode / cut / format coverage
 ```
 
-Counts, all green: regression 40, integration 12, formats 47, cut 29, demux 41,
+Counts, all green: regression 59, integration 21, formats 47, cut 29, demux 41,
 decode 24. The integration suite **skips cleanly** without a corpus, and asserts
 the numbers above rather than asserting "it ran".
 
@@ -401,6 +401,17 @@ Several tests exist because a claim was wrong once. The span cap is tested by
 requiring the smear to be *reproducible with the guard off*, since a test that
 cannot fail proves nothing. The chroma handoff and the fused spectral pass are
 asserted **bit-identical** rather than close, because chroma positions every cut.
+
+The regression suite also scans `main.js`, `worker.mjs`, `pipeline.mjs` and `src/`
+for identifiers that are used but never declared (`test/undefined.mjs`).
+`node --check` proves a file parses, not that its names resolve: renaming a
+variable at its use site but not at its declaration parses perfectly and throws
+only on the branch that reaches it. That is how `protectedSuffix`, left behind by
+a rename in `renderMusic`, passed a green test run, got pushed, and broke the page
+on the single-file path — the one path no test exercised. The scan is deliberately
+conservative (it skips strings, comments, regexes, template text, property
+accesses and object keys, and only reads a parenthesised list as parameters when
+a definition body follows), so it would rather miss a use than invent one.
 
 ## Known limitations
 
