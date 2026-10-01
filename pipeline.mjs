@@ -233,10 +233,10 @@ export function musicRangesFor(library, assets, opts = {}) {
       }
       const taken = opts.exclude?.get(id);
       const kept = taken?.length ? merged.filter((s) => !overlapsAny(s, taken)) : merged;
-      // Dialog-over-music: mark, do not drop. Removing music that has speech
-      // over it takes the speech with it, so those segments default to being
-      // left alone — but only as a default, because the detector's precision is
-      // 0.84 at its chosen operating point and the user can always overrule it.
+      // Dialog-over-music: mark, do not decide. Removing music that has speech
+      // over it takes the speech with it, so the caller is told which segments
+      // those are. The segment is still proposed: at 0.84 precision, protecting
+      // every flagged one would hold back a sixth of the music for nothing.
       const withDialog = ep.dialog
         ? kept.map((s) => ({ ...s, ...segmentHasDialog(ep.dialog, ep.features.frameRate, s.start, s.end, opts.dialogThreshold ?? DIALOG_THRESHOLD) }))
         : kept;

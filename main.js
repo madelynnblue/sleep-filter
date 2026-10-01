@@ -901,10 +901,10 @@ function computeMusic() {
   }).map((r) => ({
     id: r.id,
     segments: r.segments,
-    // Music the dialog detector fired on starts UNTICKED: cutting it would take
-    // the speech with it. It is only a default — the detector's precision is
-    // 0.84 at its operating point, so the row stays tickable.
-    enabled: new Set(r.segments.map((_, i) => i).filter((i) => !r.segments[i].hasDialog)),
+    // Everything starts ticked, including music the dialog detector fired on.
+    // That flag is an ANNOTATION, not a decision: it says this cut will take
+    // speech with it, and the user decides per segment whether that is wanted.
+    enabled: new Set(r.segments.map((_, i) => i)),
     error: r.error,
     separation: r.separation,
   }));
@@ -949,9 +949,10 @@ function renderMusic() {
   }
   const ex = calibrationExemplars();
   const picked = [...state.selected].length > 0;
-  const protectedSegs = state.music.reduce((n, ep) => n + ep.segments.filter((s) => s.hasDialog).length, 0);
-  const protectedSuffix = protectedSegs
-    ? ` ${protectedSegs} segment${protectedSegs > 1 ? 's' : ''} with dialog under them are left in by default.`
+  const speechSegs = state.music.reduce((n, ep) => n + ep.segments.filter((s) => s.hasDialog).length, 0);
+  const speechSuffix = speechSegs
+    ? ` ${speechSegs} segment${speechSegs > 1 ? 's' : ''} marked speech — cutting ` +
+      `${speechSegs > 1 ? 'those' : 'that'} takes the dialogue with ${speechSegs > 1 ? 'them' : 'it'}.`
     : '';
   if (state.musicSeed === 'foreground') {
     note.textContent = 'No common clip — calibrated per episode, so less reliable. Untick what should stay.' + protectedSuffix;
@@ -960,7 +961,7 @@ function renderMusic() {
       ? `Calibrated on ${ex.length} ${picked ? 'selected' : 'detected'} clip${ex.length > 1 ? 's' : ''}. ` +
         'Untick what should stay.'
       : 'No music example to calibrate on.';
-    note.textContent += protectedSuffix;
+    note.textContent += speechSuffix;
   }
 
   if (!state.music.length) { stopPlayersIn(el); el.innerHTML = ''; return; }
@@ -994,7 +995,7 @@ function renderMusic() {
         ` <span class="dim">&middot; ${s.duration.toFixed(1)}s</span>` +
         (s.hasDialog
           ? ` <span class="speech" title="Dialog detected over this music (score ${s.score.toFixed(2)}). ` +
-            `Left in by default so the speech is not cut with the music — tick it to remove it anyway.">speech</span>`
+            `Cutting it will cut the speech with it — untick to leave this one in.">speech</span>`
           : '') +
         `</td></tr>`;
     });

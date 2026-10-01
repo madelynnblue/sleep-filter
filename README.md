@@ -209,7 +209,8 @@ accordingly.
 #### Dialog over music
 
 Removing a stretch of music that has speech over it removes the speech too. This
-stage marks those stretches so they default to being left alone.
+stage marks those stretches so it is visible which cuts will take dialogue with
+them.
 
 It is **not** a speech-or-music classifier. Both are present at once, so the
 question is whether speech is audible *inside* a music bed. The cue comes from
@@ -259,13 +260,14 @@ available. On the real corpus the default flags 27% of proposed music seconds
 (113 of 392 segments), against 28% on the survey windows — the same behaviour on
 material neither the threshold nor the constants were fitted to.
 
-Flagged segments **start unticked but remain tickable**. That is the whole
-behaviour change: a false positive means a stretch of music stays in, a false
-negative means speech gets cut, and at 0.84 precision the user has to be able to
-overrule it. Two caveats worth carrying: Karnebäck documents that **sung vocals
-are confused with speech**, so a vocal cue may read as dialog; and the combination
-is fit on one show, so the fixed constants would want re-deriving before this is
-trusted on different material.
+Flagged segments carry a `speech` badge and **are cut by default like any other
+music** — the flag is an annotation, not a decision. Given the precision above,
+that is the deliberate choice: at 0.84 precision, protecting every flagged segment
+would leave a sixth of the protected music in for no reason, so the marker informs
+the per-segment tick rather than setting it. Two caveats worth carrying:
+Karnebäck documents that **sung vocals are confused with speech**, so a vocal cue
+may read as dialog; and the constants are fit on one show, so they would want
+re-deriving before this is trusted on different material.
 
 ### The one knob
 

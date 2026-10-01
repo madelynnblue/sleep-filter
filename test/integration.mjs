@@ -240,10 +240,9 @@ ok(`segmentation covers the theme in ${themeHits}/${segOut.length} episodes`,
   ok('switching the extras off reproduces the exemplar-only result exactly',
      seasonOnly.every((r) => r.segments.length === 0 || r.segments.every((s) => s.duration > 0)));
 
-  // Dialog-over-music: every segment carries a verdict, and the flagged ones are
-  // the ones the UI starts unticked. The rate matters — if it flagged nearly
-  // everything, the protection would be meaningless and the music would never be
-  // cut; if it flagged nothing, the stage is not running.
+  // Dialog-over-music: every segment carries a verdict, which the UI shows as a
+  // badge. The rate matters — if it flagged nearly everything the marker would be
+  // useless, and if it flagged nothing the stage is not running.
   const allSegs = union.flatMap((r) => r.segments);
   const withFlag = allSegs.filter((s) => typeof s.hasDialog === 'boolean');
   const flagged = allSegs.filter((s) => s.hasDialog);
