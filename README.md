@@ -284,7 +284,14 @@ threshold a segment must reach before it counts as music.
 At 0 the configuration is exactly what it was before the knob existed, which is
 why that is the default: adding the control changed no existing result. Raising
 it gives up short and marginal runs, and costs no theme coverage at any setting.
-The value is remembered between visits.
+The value is remembered between visits, and the hint under the slider says what
+the current setting does.
+
+Only the music stage reads the knob, so moving it recomputes phase 2 and nothing
+else — no frame is decoded again and no common clip is re-discovered. The hint
+and the saved value follow the slider as it moves; the recompute waits for
+`change` rather than `input`, because a range input fires `input` on every pixel
+of a drag.
 
 There was a second setting here until it was measured and removed — a weight on
 an 80–300 Hz "voice" cue meant to keep dialogue out of the cuts. It did not do
@@ -389,12 +396,30 @@ WebCodecs decodes MP4/AAC, the phase-1 worker pool runs and transfers its buffer
 back, phase 2 discovers and refines, and the cut writes output files.
 
 ```bash
-npm test                      # hermetic regression + real-audio integration
+npm test                      # lint + hermetic regression + real-audio integration
+npm run lint                  # oxlint alone, ~4 ms
 cd audio-decode && npm test   # demux / decode / cut / format coverage
 ```
 
 Counts, all green: regression 59, integration 21, formats 47, cut 29, demux 41,
-decode 24. The integration suite **skips cleanly** without a corpus, and asserts
+decode 24.
+
+`npm test` begins with [oxlint](https://oxc.rs) — one devDependency, a Rust
+binary, 4 ms over the whole tree, configured by `.oxlintrc.json`. It is there
+because of a specific failure: a rename landed at a use site but not at its
+declaration (`protectedSuffix` in `renderMusic`), `node --check` passed it, and
+the page threw on the single-file path. That is `no-undef`, which oxlint has.
+
+Two things about the setup are deliberate. The browser and worker globals are
+declared explicitly rather than by enabling a preset, so a *new* undefined name
+is an error instead of being lost among builtins. And `unicorn/no-new-array` is
+turned off: the rule flags `new Array(n).fill(null)`, which is the readable way to
+build the fixed-length ring buffer in `discovery.mjs`, and the suggested
+alternative allocates more.
+
+`test/undefined.mjs` still exists and still runs. It is a zero-dependency scope
+check written for this codebase, and it covers the same ground for anyone running
+`node test/regression.mjs` directly without having installed anything. The integration suite **skips cleanly** without a corpus, and asserts
 the numbers above rather than asserting "it ran".
 
 Several tests exist because a claim was wrong once. The span cap is tested by

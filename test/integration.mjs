@@ -29,7 +29,6 @@ import { openAudioFile } from '../audio-decode/src/index.mjs';
 // the path the worker actually calls, for the progress check at the end
 import { analyzeOne, musicRangesFor } from '../pipeline.mjs';
 
-const SR = 8000;
 const DIR = process.argv[2] || join(homedir(), 'Downloads', 'andy-richter-audio');
 
 // independent ground truth from the chroma-alignment work

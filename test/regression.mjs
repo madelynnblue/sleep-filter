@@ -127,8 +127,6 @@ const cat = (...xs) => {
   return out;
 };
 
-const DUR = 60 * RATE;   // 60 s synthetic episode
-
 console.log('music-analysis regression\n');
 
 /* -------------------------------------------------- 1. equivalence -- */

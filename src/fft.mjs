@@ -117,7 +117,7 @@ export function realSpectrum(x, T, mag, power, scratch) {
   // untangle: X[k] = even + W_n^k * odd, with even/odd from the half spectrum
   const a0r = zr[0], a0i = zi[0];
   const half = n >> 1;
-  const re0 = a0r + a0i, im0 = 0;
+  const re0 = a0r + a0i;
   mag[0] = Math.abs(re0); power[0] = re0 * re0;
   const reN = a0r - a0i;
   mag[half] = Math.abs(reN); power[half] = reN * reN;

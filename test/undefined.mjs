@@ -160,7 +160,7 @@ function declaredNames(src) {
   for (const m of src.matchAll(/\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
   for (const m of src.matchAll(/\bclass\s+([A-Za-z_$][\w$]*)/g)) add(m[1]);
   for (const m of src.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
-  for (const m of src.matchAll(/\b(?:const|let|var)\s*[\[{]([^\]}]*)[\]}]/g)) addList(m[1]);
+  for (const m of src.matchAll(/\b(?:const|let|var)\s*[[{]([^\]}]*)[\]}]/g)) addList(m[1]);
   for (const m of src.matchAll(/\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
   // re-exports bind names the same way imports do
   for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}\s*from\b/g)) addList(m[1]);

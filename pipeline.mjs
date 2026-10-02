@@ -217,7 +217,7 @@ export function musicRangesFor(library, assets, opts = {}) {
       // exemplars. Music the user wants gone is foreground music; the false
       // positives are quiet passages that merely resemble it in timbre, which is
       // the audio that should stay.
-      const segOpts = { levelSlack: 8, ...(opts.segment ?? {}) };
+      const segOpts = { levelSlack: 8, ...opts.segment };
       const { segments, calibration } = segmentEpisode(ep, ranges, segOpts);
       let merged = segments;
       let extraError = null;
@@ -351,7 +351,7 @@ export function encodeWav(planes, sampleRate) {
  */
 export async function extractClipWav(source, startSec, endSec, opts = {}) {
   const { chunks } = await openAudioFile(source, {
-    ...(opts.decode ?? {}),
+    ...opts.decode,
     fromSeconds: startSec,
     toSeconds: endSec,
   });

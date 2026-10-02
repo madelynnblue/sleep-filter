@@ -881,6 +881,50 @@ function strictness() {
 function stageOptions() {
   return { peakFrac: 0.7 + 0.3 * strictness() };
 }
+
+/**
+ * What the knob currently means, in words.
+ *
+ * The knob used to also scale a "voice" weight, and the old hint described that.
+ * It is the peak floor alone now, so the hint describes how much music the stage
+ * will propose rather than anything about dialogue.
+ */
+function renderStrictnessHint() {
+  const t = strictness();
+  $('strictnessHint').textContent = t === 0
+    ? 'Anything music-like is removed. This is the default.'
+    : t >= 1
+      ? 'Only unambiguous music is removed, so more music is left in.'
+      : 'Short and marginal cues are given up as the knob moves right.';
+}
+
+/**
+ * Apply the knob.
+ *
+ * Only the music stage reads it, so recomputing phase 2 is enough — nothing is
+ * re-decoded and no common clip is re-discovered. The hint and the saved value
+ * follow the slider as it moves; the recompute waits for `change`, because a
+ * range input fires `input` on every pixel of a drag and the stage is not free.
+ */
+function applyStrictness() {
+  try { localStorage.setItem(STRICTNESS_KEY, $('strictness').value); } catch { /* no storage */ }
+  renderStrictnessHint();
+}
+
+$('strictness').oninput = applyStrictness;
+$('strictness').onchange = () => {
+  if (state.library) { computeMusic(); renderMusic(); }
+};
+
+{
+  // Guarded: reading localStorage can throw outright when storage is disabled,
+  // and this runs at module scope, where an exception would kill the page.
+  let saved = NaN;
+  try { saved = Number(localStorage.getItem(STRICTNESS_KEY)); } catch { /* no storage */ }
+  if (Number.isFinite(saved) && saved >= 0 && saved <= 100) $('strictness').value = String(saved);
+  renderStrictnessHint();
+}
+
 /**
  * Propose per-episode music segments. Everything is enabled by default — the
  * user unticks what they want to keep, rather than hunting for what to remove.

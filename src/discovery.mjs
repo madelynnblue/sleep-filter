@@ -276,7 +276,7 @@ function extractForReference(episodes, maps, ref, cfg) {
       .slice(0, maxPeaksPerPair);
 
     const taken = [];
-    for (const [d, m] of ranked) {
+    for (const [d] of ranked) {
       if (taken.some((t) => Math.abs(t - d) <= refineFrames * 2)) continue;
       taken.push(d);
       const members = new Map();

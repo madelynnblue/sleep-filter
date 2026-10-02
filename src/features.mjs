@@ -297,7 +297,9 @@ export function computeFeatures(samples, opts = {}) {
  * tell whether the calibration is trustworthy.
  */
 export function calibrate(feats, nFrames, positiveMask, opts = {}) {
-  const { negSample = 4000, rng = () => 0.5 } = opts;
+  // `negSample` caps how many negative frames are used; they are taken as a
+  // contiguous prefix, so there is no sampling randomness to seed.
+  const { negSample = 4000 } = opts;
   const pos = [], neg = [];
   for (let t = 0; t < nFrames; t++) {
     if (positiveMask[t]) pos.push(t);

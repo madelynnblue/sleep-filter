@@ -18,12 +18,16 @@
   "sideEffects": false,
   "engines": { "node": ">=18" },
   "scripts": {
-    "test": "node test/regression.mjs && node test/integration.mjs",
+    "test": "npm run lint && node test/regression.mjs && node test/integration.mjs",
     "test:unit": "node test/regression.mjs",
     "test:integration": "node test/integration.mjs",
-    "spike": "node spike/run-node.mjs"
+    "spike": "node spike/run-node.mjs",
+    "lint": "oxlint"
   },
   "keywords": ["audio", "music-detection", "audio-segmentation", "browser", "webcodecs", "dsp"],
   "license": "MIT",
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "oxlint": "^1.0.0"
+  }
 }

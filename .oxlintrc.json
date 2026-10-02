@@ -1,0 +1,37 @@
+{
+  "env": {
+    "browser": true,
+    "worker": true,
+    "es2024": true
+  },
+  "globals": {
+    "AudioDecoder": "readonly",
+    "AudioData": "readonly",
+    "EncodedAudioChunk": "readonly",
+    "showDirectoryPicker": "readonly",
+    "showSaveFilePicker": "readonly",
+    "structuredClone": "readonly"
+  },
+  "ignorePatterns": [
+    "_site/**",
+    "spike/**",
+    "audio-decode/**",
+    "node_modules/**"
+  ],
+  "rules": {
+    "no-undef": "error",
+    "no-unused-vars": "error",
+    "unicorn/no-new-array": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "test/**",
+        "scripts/**"
+      ],
+      "env": {
+        "node": true
+      }
+    }
+  ]
+}
