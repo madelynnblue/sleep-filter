@@ -12,8 +12,8 @@
  */
 
 import {
-  discoverAssets, libraryFor, foregroundMusicExemplar, musicRangesFor, extractClipWav, exampleRegion,
-  renderCut, readTitleTag, outputExtensionFor,
+  analyzeOne, discoverAssets, libraryFor, foregroundMusicExemplar, musicRangesFor, extractClipWav,
+  exampleRegion, renderCut, readTitleTag, outputExtensionFor, sniffContainer, throttleProgress,
 } from './pipeline.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -42,7 +42,13 @@ const COLD_SHARES = {
   pcm: { decode: 0.020, chroma: 0, features: 0.265, fingerprints: 0.105, cfa: 0.372, dialog: 0.238 },
 };
 
-/** Which decoder a file will take, from its extension. Mirrors audio-decode. */
+/**
+ * Which decoder a file will take, from its extension. Mirrors audio-decode.
+ *
+ * An extension cannot tell a PCM stream from a compressed one inside a
+ * container, so an MKV holding PCM starts on the WebCodecs split and corrects
+ * itself once the first file has actually been measured.
+ */
 const backendFor = (name) => (/\.(wav|aiff?|aif)$/i.test(name) ? 'pcm' : 'webcodecs');
 
 /**
@@ -109,6 +115,45 @@ const hasFS = typeof window.showDirectoryPicker === 'function';
 if (!hasWebCodecs) {
   $('capability').hidden = false;
   $('capability').textContent = 'Decoding needs WebCodecs. Use Chrome, Edge or Safari 16.4+.';
+}
+
+/**
+ * Does a *worker* have WebCodecs here?
+ *
+ * The page can have it while a worker does not: Chromium exposed `AudioDecoder`
+ * to dedicated workers only some time after it shipped for the window, so an
+ * older Chrome decodes fine on the main thread and not at all off it — which
+ * looks exactly like an unsupported file, and is not one. Decoding is the one
+ * step a worker cannot delegate, so decide the path once, up front.
+ */
+async function workersHaveWebCodecs() {
+  if (typeof Worker !== 'function') return false;
+  const url = URL.createObjectURL(new Blob(
+    ['postMessage(typeof AudioDecoder === "function")'], { type: 'application/javascript' }));
+  return new Promise((resolve) => {
+    let worker;
+    const done = (has) => { worker?.terminate(); URL.revokeObjectURL(url); resolve(has); };
+    try {
+      // the module type, because that is what the real worker is
+      worker = new Worker(url, { type: 'module' });
+    } catch {
+      done(false);
+      return;
+    }
+    worker.onmessage = (e) => done(e.data === true);
+    worker.onerror = () => done(false);
+    // A probe that never answers must not hold up the first file.
+    setTimeout(() => done(false), 3000);
+  });
+}
+
+const workersDecode = hasWebCodecs && await workersHaveWebCodecs();
+if (hasWebCodecs && !workersDecode) {
+  $('capability').hidden = false;
+  $('capability').textContent =
+    'This browser gives WebCodecs to the page but not to workers, so files are analysed ' +
+    'on the main thread and the page can feel sluggish while one runs. A newer browser ' +
+    'restores the faster path.';
 }
 
 /* --------------------------------------------------------- file input -- */
@@ -384,11 +429,41 @@ async function analyzePool() {
   const queued = pendingFiles();
   // stale results for the same ids would corrupt discovery
   state.analyses = state.analyses.filter((a) => !queued.some((f) => f.id === a.id));
-  const limit = workerLimit(WORKER_CEILING);
+  // On the main-thread path there is only one thread to give, so the pool is one
+  // file at a time whatever the device reports.
+  const limit = workersDecode ? workerLimit(WORKER_CEILING) : 1;
   const results = [];
   let active = 0;
 
-  function analyzeInWorker(entry) {
+  /**
+   * The fallback for a browser whose workers have no WebCodecs: decode and
+   * analyse right here.
+   *
+   * Second choice, not first. This is CPU-bound JavaScript in the same thread
+   * that draws the page, so the meter only moves between chunks — but an older
+   * browser can still do the work rather than refusing every file.
+   */
+  async function analyzeOnMainThread(entry) {
+    try {
+      const analysis = await analyzeOne(entry.file, entry.id, {
+        shares: sharesFor(entry.file),
+        onProgress: throttleProgress((p) => { entry.progress = p ?? 0; renderFiles(); }),
+      });
+      entry.status = 'done';
+      entry.progress = 1;
+      learnShares(analysis?.timings, analysis?.backend);
+      renderFiles();
+      return analysis;
+    } catch (err) {
+      entry.status = 'error';
+      entry.error = err?.message ?? String(err);
+      renderFiles();
+      return null;
+    }
+  }
+
+  function analyzeEntry(entry) {
+    if (!workersDecode) return analyzeOnMainThread(entry);
     return new Promise((resolve) => {
       const worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
       const finish = (result) => { worker.terminate(); renderFiles(); resolve(result); };
@@ -429,7 +504,7 @@ async function analyzePool() {
         // once when the pool starts.
         setStatus(`Analysing ${state.files.filter((f) => f.status === 'running' || f.status === 'queued').length} file(s)…`);
         renderFiles();
-        analyzeInWorker(entry)
+        analyzeEntry(entry)
           .then((a) => { if (a) results.push(a); })
           .finally(() => { active--; pump(); });
       }
@@ -1159,6 +1234,7 @@ $('export').onclick = async () => {
     // Plan first. The overwrite check has to run before anything is written, or
     // cancelling would leave a half-exported folder behind.
     const plan = [];
+    const uncuttable = [];
     for (const [id, ranges] of perFile) {
       const entry = state.files.find((f) => f.id === id);
       if (!entry || !ranges.length) continue;
@@ -1166,11 +1242,26 @@ $('export').onclick = async () => {
       // comes back as audio-only, so it is an .m4a now, and a .mov never was
       // right. The stem is what lines input and output up; the extension says
       // what the file actually is.
-      const head = new Uint8Array(await entry.file.slice(0, 16).arrayBuffer());
+      // 64 bytes, not 16: Matroska's DocType sits at the end of the EBML
+      // header, and that is what separates an .mkv from a .webm.
+      const head = new Uint8Array(await entry.file.slice(0, 64).arrayBuffer());
+      // It demuxes and analyses, but nothing here can re-mux it: cutting would
+      // read the whole file into memory only to be refused, and on a video-sized
+      // MKV that is the expensive part. Skip it before that happens.
+      const container = sniffContainer(head);
+      if (container === 'matroska' || container === 'webm') { uncuttable.push(entry.id); continue; }
       plan.push({
         entry, ranges,
         name: `${String(entry.file.name).replace(/\.[^./\\]+$/, '')}.${outputExtensionFor(head)}`,
       });
+    }
+
+    if (!plan.length) {
+      $('summary').textContent = uncuttable.length
+        ? `Cannot cut ${uncuttable.join(', ')}: Matroska/WebM output is not implemented yet.`
+        : 'Nothing to remove.';
+      $('done').hidden = false;
+      return;
     }
 
     if (outDir && !await confirmReplacements(outDir, plan.map((p) => p.name))) return;
@@ -1206,7 +1297,10 @@ $('export').onclick = async () => {
     }
 
     $('summary').textContent =
-      `${written} file(s) written, ${totalRemoved.toFixed(0)}s of music removed.`;
+      `${written} file(s) written, ${totalRemoved.toFixed(0)}s of music removed.` +
+      (uncuttable.length
+        ? ` ${uncuttable.length} skipped (${uncuttable.join(', ')}): Matroska/WebM output is not implemented yet.`
+        : '');
     $('done').hidden = false;
     $('done').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {

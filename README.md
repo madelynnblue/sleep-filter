@@ -328,6 +328,11 @@ Each container needs its own handling, and each has a trap:
 | MP3 | drop frames | LAME's `Xing`/`Info` header declares the *original* length, so a 60 s cut still reports 90 s until it is rewritten |
 | WAV / AIFF | copy the header, patch three length fields | none — PCM is byte-addressable, so the cut is exact arithmetic |
 
+Matroska is the one that is not there yet. Its packets can be selected, but the
+kept ones have to be retimed into fresh clusters and Opus has to keep its
+pre-skip, or every join drifts by up to a packet. So an MKV can be analysed and
+auditioned but not cut, and says so.
+
 Tags ride along: the source's `udta` box is copied **verbatim** rather than
 re-parsed, so every atom survives whether or not the code knows what it means.
 Output keeps the input's stem and takes an extension from the container, so a
@@ -335,19 +340,45 @@ video file comes back as `.m4a`.
 
 ## Supported formats
 
-| container | codec | status |
-|---|---|---|
-| MP4 · M4A · MOV | AAC | ✅ tested, including files with a video track |
-| FLAC | FLAC | ✅ tested |
-| MP3 | MP3 | ✅ tested |
-| WAV · AIFF | PCM | ✅ tested, incl. `WAVE_FORMAT_EXTENSIBLE` |
-| MKV · WebM · Ogg · WMA · AVI | anything | ❌ no demuxer |
+| container | codec | analysis | cutting |
+|---|---|---|---|
+| MP4 · M4A · MOV | AAC | ✅ tested, including files with a video track | ✅ |
+| FLAC | FLAC | ✅ tested | ✅ |
+| MP3 | MP3 | ✅ tested | ✅ |
+| WAV · AIFF | PCM | ✅ tested, incl. `WAVE_FORMAT_EXTENSIBLE` | ✅ |
+| MKV (Matroska) · WebM | AAC, Opus, Vorbis, FLAC, MP3, PCM, … | ✅ anything this browser can decode | ❌ no muxer |
+| Ogg · WMA · AVI | anything | ❌ no demuxer | ❌ |
 
-**What's missing for the unsupported formats is a demuxer, not a decoder.**
+**MKV and WebM are read by a vendored demuxer, not a hand-written one.** EBML
+(variable-length integers, a nested element tree, block lacing, per-codec
+`CodecPrivate`) is a far bigger job than the ISO-BMFF parser, so `mediabunny`
+does it — one self-contained 692 KB ESM file (177 KB gzipped), MPL-2.0, fetched
+**lazily**: a run that never opens an EBML file never downloads it. Everything
+after the demux is unchanged: WebCodecs still does the decoding.
+
+WebCodecs has to be available *where the work runs*, and that is a worker. A
+browser that exposes `AudioDecoder` only to the window (older Chrome) is detected
+at load and falls back to analysing on the main thread: slower to stay
+responsive, and one file at a time, but it works instead of reporting an
+unsupported file. The page says so under the drop zone when it happens. Updating
+the browser restores the pooled, multi-worker path.
+
+HE-AAC is the exception worth knowing about. A `CodecPrivate` signalling SBR or
+PS makes the profile string `mp4a.40.5`/`mp4a.40.29`, which Chromium's WebCodecs
+validation refuses even though its decoder handles both. The config is restated
+and re-checked against the real decoder rather than believing that verdict — see
+`audio-decode/README.md`.
+
+The remaining unsupported formats are missing a *demuxer*, not a decoder.
 WebCodecs decodes Opus, Vorbis and AC-3 perfectly well — it simply cannot find
-the frames. Those files report an error and are neither converted nor uploaded;
-there is no fallback decoder in the page (the ffmpeg path in `audio-decode` is
-Node-only and reachable only from tests).
+the frames in Ogg or AVI. Those files report an error and are neither converted
+nor uploaded; there is no fallback decoder in the page (the ffmpeg path in
+`audio-decode` is Node-only and reachable only from tests).
+
+Cutting an MKV is a separate gap: cutting here means rebuilding a sample table,
+and the Matroska equivalent (packet selection with retimed clusters and Opus
+pre-skip) is not written yet. Analysis, previews and the clip player work;
+`Export…` skips such a file and says why, rather than failing obscurely.
 
 ## Running it
 

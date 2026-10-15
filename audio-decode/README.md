@@ -21,8 +21,8 @@ for await (const chunk of chunks()) analysis.addChunk(chunk);
 
 | | when | what it covers |
 |---|---|---|
-| **`webcodecs`** | `AudioDecoder` exists and the container is MP4, FLAC or MP3 | non-fragmented MP4/M4A/MOV, native FLAC, MPEG audio. **No external binary, no WASM payload.** |
-| **`ffmpeg`** | Node, or anything the built-in path refuses | every other container/codec: Matroska, Ogg, fragmented MP4, AC-3, … |
+| **`webcodecs`** | `AudioDecoder` exists and the container is MP4, FLAC, MP3, WAV/AIFF, Matroska or WebM | non-fragmented MP4/M4A/MOV, native FLAC, MPEG audio, PCM, and EBML. **No external binary, no install.** |
+| **`ffmpeg`** | Node, or anything the built-in path refuses | every other container/codec: Ogg, AVI, fragmented MP4, AC-3, … |
 
 Selection is automatic. `opts.backend` forces one (`'webcodecs'` throws rather
 than silently degrading if it cannot work); `opts.forceFfmpeg` skips the built-in
@@ -30,6 +30,58 @@ path.
 
 The point of the built-in path is that the common case — an `.m4a`/`.mp4` with
 AAC — needs no 30 MB ffmpeg.wasm download and no cross-origin-isolation headers.
+
+## Matroska / WebM
+
+EBML is the one container family not parsed here by hand. Variable-length
+integers, a nested element tree, block lacing and per-codec `CodecPrivate`, plus
+the codec delay and seek pre-roll that a naive parser gets subtly wrong on Opus,
+add up to a much larger job than the ISO-BMFF parser. So
+[`mediabunny`](https://mediabunny.dev) does it: one self-contained ESM file
+vendored under `vendor/mediabunny/` (692 KB, 177 KB gzipped, MPL-2.0 — see the
+README there), imported **lazily** on the first EBML file, so an MP4 run never
+fetches it.
+
+Decoding is still WebCodecs, exactly as in `webcodecs.mjs`; the one exception is
+PCM, which the bundle decodes itself and which therefore also works under Node
+(that is what makes `test/matroska.mjs` hermetic). A native PCM path reports
+`backend: 'pcm'`; everything else reports `'webcodecs'`.
+
+### AAC, and why `canDecode()` is not the last word
+
+Matroska stores AAC's `AudioSpecificConfig` in `CodecPrivate`, and the codec
+string is derived from it: object type 2 gives `mp4a.40.2`, but 5 (SBR) gives
+`mp4a.40.5` and 29 (PS) gives `mp4a.40.29`. Chromium's WebCodecs validation
+rejects those two profile strings — and rejects AAC with no `description` at all
+— even though its AAC decoder handles SBR and PS. `canDecode()` therefore says
+no for a track that would decode perfectly well.
+
+So a refusal is treated as the start of a question, not the end of one. The
+config is restated (keep the real `description`, call it `mp4a.40.2`; or
+synthesise the two-byte AAC-LC header from the sample rate and channel count when
+`CodecPrivate` is missing) and each candidate is put to
+`AudioDecoder.isConfigSupported()`. The first accepted one wins, and its packets
+are then driven through this package's own WebCodecs path — the same one MP4
+uses — because mediabunny's sink declines a config its own check rejected.
+
+Nothing is assumed: if no candidate is accepted, the error says what was refused
+rather than blaming the codec:
+
+```
+cannot read this file: its matroska track holds "aac", which this browser cannot
+decode, and this environment has no fallback decoder (the ffmpeg path is
+Node-only). — config mp4a.40.29, 2 ch, 22050 Hz, description 5 bytes;
+AudioSpecificConfig object type 29; isConfigSupported false
+```
+
+A track whose codec this environment cannot decode — AC-3 in Firefox, say — is
+reported by name rather than as an unreadable container:
+
+```
+cannot read this file: its matroska track holds "ac-3", which this browser
+cannot decode, and this environment has no fallback decoder (the ffmpeg path is
+Node-only).
+```
 
 ## The output contract
 
@@ -158,3 +210,7 @@ Both skip cleanly when the corpus or ffmpeg is absent.
   selection logic has a place for it, but it is not implemented.
 - **Opus/FLAC/ALAC in MP4** are detected and reported, but only AAC has been
   validated end-to-end.
+- **An MKV with several audio tracks** takes the primary one (mediabunny's
+  `getPrimaryAudioTrack`); there is no track picker.
+- **Matroska and WebM cannot be cut**, only read: the muxing half is not
+  written. `cutAudio` refuses them by name instead of failing obscurely.

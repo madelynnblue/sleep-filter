@@ -4,9 +4,11 @@
  * The other half of the boundary that music-analysis deliberately does not
  * cross. Two backends, chosen automatically:
  *
- *   webcodecs  built-in ISO-BMFF demuxer + WebCodecs AudioDecoder.
- *              No external binary, no WASM payload. Handles non-fragmented
- *              MP4/M4A, which is what the common case actually is.
+ *   webcodecs  a built-in demuxer + WebCodecs AudioDecoder. No external binary,
+ *              no install. Handles non-fragmented MP4/M4A, which is what the
+ *              common case actually is, plus native FLAC, MPEG audio, WAV/AIFF
+ *              PCM — and Matroska/WebM, whose demuxer is vendored rather than
+ *              written here (see matroska.mjs).
  *   ffmpeg     child-process fallback (Node). Covers every other container and
  *              codec, plus fragmented MP4.
  *
@@ -21,7 +23,8 @@ import { demuxFlac, muxFlac } from './flac.mjs';
 import { demuxMp3, muxMp3 } from './mp3.mjs';
 import { demuxWav, demuxAiff, decodePcm, selectPcmFrames, muxPcm } from './pcm.mjs';
 import { decodeWithWebCodecs } from './webcodecs.mjs';
-import { readSource, writeTempFile } from './source.mjs';
+import { openMatroska, isNativePcm } from './matroska.mjs';
+import { readSource, writeTempFile, HEAD_BYTES } from './source.mjs';
 
 export { sniffContainer, MP4_EXTENSIONS } from './container.mjs';
 export { demuxMp4, parseAudioSpecificConfig, readTags, readTagsFromMoov } from './mp4.mjs';
@@ -29,6 +32,7 @@ export { demuxFlac, muxFlac } from './flac.mjs';
 export { demuxMp3, muxMp3 } from './mp3.mjs';
 export { demuxWav, demuxAiff, decodePcm, selectPcmFrames, muxPcm } from './pcm.mjs';
 export { decodeWithWebCodecs, decodeMp4WithWebCodecs, audioDataToChunk } from './webcodecs.mjs';
+export { openMatroska, isNativePcm } from './matroska.mjs';
 export { readSource } from './source.mjs';
 export { muxAudioMp4 } from './mux.mjs';
 export {
@@ -47,16 +51,25 @@ async function loadFfmpeg() {
   }
 }
 
+/** EBML containers: Matroska and WebM, told apart by the header's DocType. */
+const EBML = ['matroska', 'webm'];
+
 /**
  * Does the built-in path apply to this buffer?
  *
- * Three containers are handled natively. Everything else — Ogg, WMA, WebM,
- * anything unrecognised — still needs a decoder that is not here, and says so
- * rather than failing obscurely.
+ * Four containers are handled natively, plus the EBML pair (Matroska/WebM),
+ * which has its own demuxer and is opened separately. Everything else — Ogg,
+ * WMA, AVI, anything unrecognised — still needs a decoder that is not here, and
+ * says so rather than failing obscurely.
  */
 function builtInViable(bytes, head, opts) {
   const container = sniffContainer(head);
   if (opts.forceFfmpeg) return null;
+  // The EBML path cannot be probed from bytes alone: opening it is asynchronous
+  // (the demuxer is a lazily imported bundle) and whether it is *usable* depends
+  // on the codec inside, which only it can answer. So record the container and
+  // let openAudioFile do the rest.
+  if (EBML.includes(container)) return { container, ebml: true };
   const BUILT_IN = ['mp4', 'flac', 'mp3', 'wav', 'aiff'];
   if (!BUILT_IN.includes(container)) return null;
   try {
@@ -87,6 +100,28 @@ function builtInViable(bytes, head, opts) {
  */
 export async function openAudioFile(source, opts = {}) {
   const wanted = opts.backend ?? 'auto';
+  // Set when an EBML track exists but this environment cannot decode it, so the
+  // error at the bottom can name the codec instead of calling it an unknown
+  // container.
+  let undecodable = null;
+
+  // ---- EBML, straight out of the Blob ----
+  // A dropped File is peeked at, never read: when it turns out to be EBML, the
+  // vendored demuxer pulls the ranges it needs out of the Blob itself, so a
+  // multi-gigabyte episode with video in it is never copied into memory. Every
+  // other path needs the bytes, which readSource fetches below.
+  if (wanted !== 'ffmpeg' && !opts.forceFfmpeg &&
+      typeof Blob !== 'undefined' && source instanceof Blob) {
+    const head = new Uint8Array(await source.slice(0, HEAD_BYTES).arrayBuffer());
+    if (EBML.includes(sniffContainer(head))) {
+      const matroska = await openMatroska(source, opts);
+      if (matroska.decodable) return matroskaResult(matroska, source.name ?? null);
+      if (wanted === 'webcodecs') throw new Error(undecodableMessage(matroska));
+      // Only ffmpeg could decode this, and it needs a path or the bytes.
+      undecodable = matroska;
+    }
+  }
+
   const res = await readSource(source, opts);
   const bytes = res.bytes;
 
@@ -123,6 +158,14 @@ export async function openAudioFile(source, opts = {}) {
         throw new Error('backend "webcodecs" requested but AudioDecoder is unavailable in this environment');
       }
       // else: fall through to ffmpeg (Node has none of this natively)
+    } else if (viable?.ebml && !undecodable) {
+      // A source that is not a Blob (bytes, a path, a URL) reaches EBML here.
+      const matroska = await openMatroska(bytes, opts);
+      if (matroska.decodable) return matroskaResult(matroska, res.name);
+      if (wanted === 'webcodecs') throw new Error(undecodableMessage(matroska));
+      // A codec neither the browser nor WebCodecs can decode: only the ffmpeg
+      // backend could, so remember what it was and let the fallback decide.
+      undecodable = matroska;
     } else if (wanted === 'webcodecs') {
       throw new Error(`backend "webcodecs" cannot handle this input: ${viable?.reason ?? `no built-in demuxer for ${viable?.container ?? 'this container'}`}`);
     }
@@ -131,6 +174,17 @@ export async function openAudioFile(source, opts = {}) {
   // ---- ffmpeg fallback ----
   const ff = await loadFfmpeg();
   if (!ff) {
+    if (undecodable) {
+      // There IS a demuxer for this file, and it has already told us what the
+      // track holds. Blaming the container would send the reader looking for
+      // the wrong thing.
+      throw new Error(
+        `cannot read this file: its ${undecodable.container} track holds ` +
+        `${undecodable.codec ? `"${undecodable.codec}"` : 'an unrecognised codec'}, which this ` +
+        'browser cannot decode, and this environment has no fallback decoder ' +
+        `(the ffmpeg path is Node-only).${undecodable.diagnosis ? ` — ${undecodable.diagnosis}` : ''}`
+      );
+    }
     // The old wording blamed WebCodecs, which is usually present and not the
     // problem — the container or codec simply has no demuxer here. Saying so
     // saves the reader from chasing a decoder they already have.
@@ -138,7 +192,7 @@ export async function openAudioFile(source, opts = {}) {
     throw new Error(
       `cannot read this file: no built-in demuxer handles "${container}", and this ` +
       'environment has no fallback decoder (the ffmpeg path is Node-only). ' +
-      'Supported: MP4/M4A/MOV, FLAC, MP3, WAV, AIFF.'
+      'Supported: MP4/M4A/MOV, FLAC, MP3, WAV, AIFF, Matroska (MKV) and WebM.'
     );
   }
   const path = res.path ?? await writeTempFile(bytes, guessExt(res.name));
@@ -157,6 +211,39 @@ export async function openAudioFile(source, opts = {}) {
     chunks: () => ff.decodeWithFfmpeg(path, opts),
     _tempPath: res.path ? null : path,
   };
+}
+
+/**
+ * The result shape for the EBML path, shared by the two ways in (a Blob read
+ * lazily, or bytes already in hand).
+ */
+function matroskaResult(matroska, name) {
+  return {
+    container: matroska.container,
+    // Decoding is still WebCodecs; only PCM has a decoder in the bundle, and
+    // calling that 'webcodecs' would misreport the progress split.
+    backend: isNativePcm(matroska.codec) ? 'pcm' : 'webcodecs',
+    info: {
+      name,
+      container: matroska.container,
+      codec: matroska.codec,
+      sampleRate: matroska.sampleRate,
+      channels: matroska.channels,
+      duration: matroska.duration,
+    },
+    chunks: matroska.chunks,
+    // Private, like the ffmpeg path's _tempPath: which restated decoder config
+    // was needed, when one was.
+    _rescued: matroska.rescued,
+  };
+}
+
+/** Why an EBML file cannot be decoded, naming the codec and what was refused. */
+function undecodableMessage(matroska) {
+  const what = matroska.codec ? `"${matroska.codec}" audio` : 'an unrecognised codec';
+  const why = matroska.diagnosis ? ` — ${matroska.diagnosis}` : '';
+  return `backend "webcodecs" cannot handle this input: its ${matroska.container} ` +
+    `track holds ${what}, which this environment cannot decode${why}`;
 }
 
 function guessExt(name) {

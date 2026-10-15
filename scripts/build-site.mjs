@@ -159,6 +159,13 @@ for (const name of PAGE_FILES) {
 const src = await copyModules(join(root, 'src'), join(out, 'src'));
 const decode = await copyModules(join(root, 'audio-decode', 'src'), join(out, 'audio-decode', 'src'));
 
+// The Matroska/WebM demuxer is vendored third-party code and ships verbatim:
+// one self-contained ESM file with no imports of its own, loaded lazily by
+// audio-decode/src/matroska.mjs, so only an EBML file ever downloads it. Its
+// LICENSE rides along because it is MPL-2.0, not MIT.
+await cp(join(root, 'audio-decode', 'vendor'), join(out, 'audio-decode', 'vendor'), { recursive: true });
+const vendor = await walk(join(out, 'audio-decode', 'vendor'));
+
 // Pages runs Jekyll unless told not to, and Jekyll drops files it does not
 // understand
 await writeFile(join(out, '.nojekyll'), '');
@@ -174,3 +181,4 @@ console.log(`assembled ${out}`);
 console.log(`  page              ${PAGE_FILES.length} files`);
 console.log(`  src               ${src.length} modules`);
 console.log(`  audio-decode/src  ${decode.length} modules`);
+console.log(`  vendored          ${vendor.length} files`);

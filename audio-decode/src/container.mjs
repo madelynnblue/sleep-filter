@@ -9,8 +9,44 @@
 const ascii = (b, o, s) => String.fromCharCode(...b.subarray(o, o + s));
 
 /**
- * @param {Uint8Array} bytes  at least the first ~16 bytes
- * @returns {'mp4'|'webm'|'wav'|'mp3'|'flac'|'ogg'|'aiff'|'unknown'}
+ * Read an EBML variable-length integer (the length prefix used throughout
+ * Matroska), returning its value and how many bytes it occupied.
+ *
+ * The first byte's leading zero count gives the width: `0x88` is one byte
+ * holding 8, `0x40 0x23` is two bytes holding 0x23. A leading zero byte is
+ * reserved and means "unknown size", which no header field uses.
+ */
+function vint(bytes, at) {
+  const first = bytes[at];
+  if (first === undefined || first === 0) return null;
+  let length = 1;
+  for (let mask = 0x80; mask && !(first & mask); mask >>= 1) length++;
+  if (length > 8 || at + length > bytes.length) return null;
+  let value = first & (0xff >> length);
+  for (let i = 1; i < length; i++) value = value * 256 + bytes[at + i];
+  return { value, length };
+}
+
+/**
+ * Matroska and WebM share the EBML magic and are told apart only by the
+ * `DocType` string inside the EBML header — the `42 82` element, which lands
+ * around offset 24 in practice, past a 16-byte peek.
+ *
+ * @returns {string|null} lowercased DocType, or null if it is not within reach
+ */
+function ebmlDocType(bytes) {
+  for (let i = 4; i < Math.min(bytes.length, 64) - 2; i++) {
+    if (bytes[i] !== 0x42 || bytes[i + 1] !== 0x82) continue;
+    const size = vint(bytes, i + 2);
+    if (!size || i + 2 + size.length + size.value > bytes.length) return null;
+    return ascii(bytes, i + 2 + size.length, size.value).toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * @param {Uint8Array} bytes  the first ~64 bytes of the file
+ * @returns {'mp4'|'matroska'|'webm'|'wav'|'mp3'|'flac'|'ogg'|'aiff'|'unknown'}
  */
 export function sniffContainer(bytes) {
   if (!bytes || bytes.length < 4) return 'unknown';
@@ -18,8 +54,12 @@ export function sniffContainer(bytes) {
   // ISO base media (MP4/M4A/MOV): ....ftyp
   if (bytes.length >= 12 && ascii(bytes, 4, 4) === 'ftyp') return 'mp4';
 
-  // Matroska / WebM: EBML header
-  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return 'webm';
+  // Matroska / WebM: EBML header. Both are EBML, so the DocType decides which
+  // name the rest of the package reports; a header too short to hold it is
+  // reported as webm, the more common of the two on the web.
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return ebmlDocType(bytes) === 'matroska' ? 'matroska' : 'webm';
+  }
 
   if (bytes.length >= 12 && ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WAVE') return 'wav';
   if (bytes.length >= 12 && ascii(bytes, 0, 4) === 'FORM' &&

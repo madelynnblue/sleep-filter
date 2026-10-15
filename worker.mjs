@@ -8,28 +8,7 @@
  * no serialisation step, and could drop straight into IndexedDB as a cache.
  */
 
-import { analyzeOne } from './pipeline.mjs';
-
-/**
- * Rate-limit progress messages.
- *
- * `onProgress` fires per chunk, and in the browser a chunk is a single AAC frame
- * — about 21 ms of audio. A 22-minute episode therefore produces on the order of
- * 60,000 callbacks, and every message rebuilds the file list on the main thread.
- * Report on a 1% change instead, with a 100 ms floor so the meter still moves
- * when progress stalls inside a stage.
- */
-function throttleProgress(post) {
-  const STEP = 0.01, MIN_MS = 100;
-  let lastP = -1, lastT = -Infinity;
-  return (p) => {
-    if (p === null) return;
-    const now = performance.now();
-    if (p - lastP < STEP && now - lastT < MIN_MS) return;
-    lastP = p; lastT = now;
-    post(p);
-  };
-}
+import { analyzeOne, throttleProgress } from './pipeline.mjs';
 
 self.onmessage = async (e) => {
   const { id, source, shares } = e.data;

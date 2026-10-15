@@ -14,9 +14,10 @@ import { EpisodeAnalyzer, Library, segmentEpisode, segmentBySeries, segmentHasDi
 import { FEATURE_NAMES, NFEAT } from './src/features.mjs';
 import {
   openAudioFile, cutAudio, rangesFromSegments, readTagsFromMoov, outputExtensionFor,
+  sniffContainer,
 } from './audio-decode/src/index.mjs';
 
-export { outputExtensionFor };
+export { outputExtensionFor, sniffContainer };
 
 /** Column index of the 4 Hz modulation energy — the speech cue. */
 const MOD4 = FEATURE_NAMES.indexOf('mod4');
@@ -61,6 +62,30 @@ export async function readTitleTag(source) {
   if (!moov) return null;
   const bytes = new Uint8Array(await source.slice(moov.start, moov.end).arrayBuffer());
   return readTagsFromMoov(bytes)['©nam'] ?? null;
+}
+
+/**
+ * Rate-limit per-chunk progress.
+ *
+ * `onProgress` fires per chunk, and in the browser a chunk is a single AAC frame
+ * — about 21 ms of audio. A 22-minute episode therefore produces on the order of
+ * 60,000 callbacks, and every one of them rebuilds the file list. Report on a 1%
+ * change instead, with a 100 ms floor so the meter still moves when progress
+ * stalls inside a stage.
+ *
+ * Shared rather than private to the worker: the main-thread fallback in main.js
+ * has exactly the same problem, for exactly the same reason.
+ */
+export function throttleProgress(post) {
+  const STEP = 0.01, MIN_MS = 100;
+  let lastP = -1, lastT = -Infinity;
+  return (p) => {
+    if (p === null) return;
+    const now = performance.now();
+    if (p - lastP < STEP && now - lastT < MIN_MS) return;
+    lastP = p; lastT = now;
+    post(p);
+  };
 }
 
 /**

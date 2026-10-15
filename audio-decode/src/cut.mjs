@@ -19,6 +19,7 @@ import { demuxMp3, muxMp3 } from './mp3.mjs';
 import { demuxWav, demuxAiff, selectPcmFrames, muxPcm } from './pcm.mjs';
 import { muxAudioMp4 } from './mux.mjs';
 import { sniffContainer } from './container.mjs';
+import { HEAD_BYTES } from './source.mjs';
 
 /** Sort and merge overlapping [start, end) ranges in seconds. */
 export function normalizeRanges(ranges) {
@@ -85,7 +86,14 @@ export function selectSamples(demuxed, ranges, opts = {}) {
  * @returns {{bytes: Uint8Array, info: object}}
  */
 export function cutAudio(source, ranges, opts = {}) {
-  const container = opts.container ?? sniffContainer(source.subarray(0, 16));
+  const container = opts.container ?? sniffContainer(source.subarray(0, HEAD_BYTES));
+  // There is a demuxer for these (see matroska.mjs) but no muxer: cutting works
+  // by rebuilding a sample table, and Matroska's equivalent — packet selection
+  // with retimed clusters and Opus pre-skip — is not written. Say that, rather
+  // than letting demuxMp4 report a missing moov box for a file that never had one.
+  if (container === 'matroska' || container === 'webm') {
+    throw new Error(`cutAudio: cutting ${container} is not implemented — MP4, FLAC, MP3, WAV and AIFF re-mux losslessly`);
+  }
   // PCM needs no frames list and no muxer: it is byte-addressable, so the cut is
   // arithmetic on the header and a concatenation of the kept bytes.
   if (container === 'wav' || container === 'aiff') return cutPcm(source, ranges, opts, container);
@@ -186,7 +194,9 @@ function cutPcm(source, ranges, opts, container) {
  * so the page can name a file before cutting it, and the cut agrees.
  */
 export function outputExtensionFor(source) {
-  const container = sniffContainer(source.subarray(0, 16));
+  const container = sniffContainer(source.subarray(0, HEAD_BYTES));
+  if (container === 'matroska') return 'mkv';
+  if (container === 'webm') return 'webm';
   if (container === 'flac') return 'flac';
   if (container === 'mp3') return 'mp3';
   if (container === 'wav') return 'wav';

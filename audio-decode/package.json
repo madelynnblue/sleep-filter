@@ -1,7 +1,7 @@
 {
   "name": "audio-decode",
   "version": "0.1.0",
-  "description": "Encoded audio -> raw AudioChunk stream. WebCodecs + a built-in MP4 demuxer, with an ffmpeg fallback. No server, no WASM for the common case.",
+  "description": "Encoded audio -> raw AudioChunk stream. WebCodecs + built-in MP4/FLAC/MP3/PCM demuxers, a vendored Matroska/WebM reader, and an ffmpeg fallback. No server, no WASM.",
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
@@ -10,10 +10,12 @@
     "./container": "./src/container.mjs",
     "./webcodecs": "./src/webcodecs.mjs",
     "./cut": "./src/cut.mjs",
-    "./mux": "./src/mux.mjs"
+    "./mux": "./src/mux.mjs",
+    "./matroska": "./src/matroska.mjs"
   },
   "files": [
     "src",
+    "vendor",
     "README.md"
   ],
   "sideEffects": false,
@@ -21,17 +23,22 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/demux.mjs && node test/decode.mjs && node --max-old-space-size=4096 test/cut.mjs",
+    "test": "node test/matroska.mjs && node test/demux.mjs && node test/decode.mjs && node --max-old-space-size=4096 test/cut.mjs",
     "test:demux": "node test/demux.mjs --all",
     "test:decode": "node test/decode.mjs",
-    "test:cut": "node test/cut.mjs"
+    "test:cut": "node test/cut.mjs",
+    "test:matroska": "node test/matroska.mjs"
   },
   "keywords": [
     "webcodecs",
     "mp4",
+    "mkv",
+    "matroska",
+    "webm",
     "demuxer",
     "iso-bmff",
     "aac",
+    "opus",
     "audio",
     "browser",
     "decoder"

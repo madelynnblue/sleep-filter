@@ -27,12 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Don't publish broken code. The hermetic suite runs for real; the
+      # Don't publish broken code. The hermetic suites run for real; the
       # corpus-based ones (integration, and audio-decode's demux/decode/cut/
       # formats) need a season of episodes and ffmpeg, so they skip cleanly here
       # and are run locally instead.
+      #
+      # matroska.mjs is hermetic: it writes its own fixture with the vendored
+      # muxer, so it covers the one path that would otherwise be untested until
+      # someone dropped an .mkv on the real page.
       - name: Test
-        run: node test/regression.mjs
+        run: |
+          node test/regression.mjs
+          node audio-decode/test/matroska.mjs
 
       # The page lives at the repo root, so its imports of ./src and
       # ./audio-decode/src resolve the same way here as they do locally. The
